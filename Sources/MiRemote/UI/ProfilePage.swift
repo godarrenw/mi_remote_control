@@ -8,6 +8,7 @@ struct ProfilePage: View {
     @Binding var selection: SidebarItem
     @State private var showAddApp = false
     @State private var showPresets = false
+    @State private var detailProfile: ProfileDetailSelection?
 
     private var overlayProfiles: [String] {
         model.config.profiles.keys.filter { $0 != "global" }.sorted()
@@ -24,8 +25,7 @@ struct ProfilePage: View {
 
                 SettingsGroup(title: "全局") {
                     Button {
-                        model.currentProfile = "global"
-                        selection = .mapping
+                        detailProfile = ProfileDetailSelection(id: "global")
                     } label: {
                         SettingsRow(icon: "globe", title: "全局默认（Global）",
                                     subtitle: "适用于所有未单独配置的 App") {
@@ -71,6 +71,15 @@ struct ProfilePage: View {
         }
         .sheet(isPresented: $showAddApp) { AddRunningAppSheet() }
         .sheet(isPresented: $showPresets) { PresetLibrarySheet() }
+        .sheet(item: $detailProfile) { selected in
+            MappingDetailView(config: model.config, profile: selected.id,
+                              onEdit: {
+                                  detailProfile = nil
+                                  model.currentProfile = selected.id
+                                  selection = .mapping
+                              })
+                .frame(width: 900, height: 610)
+        }
     }
 
     @ViewBuilder
@@ -78,19 +87,22 @@ struct ProfilePage: View {
         let overrides = model.config.profiles[bundle] ?? [:]
         let names = overrides.keys.compactMap { RemoteKey(rawValue: $0) }.map { KeyDisplay.badge($0) }
         HStack(spacing: 10) {
-            appIcon(bundle)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(profileDisplayName(bundle)).font(.callout)
-                Text("继承全局 · 已覆盖 \(overrides.count) 项" +
-                     (names.isEmpty ? "" : "（\(names.prefix(5).joined(separator: "、"))\(names.count > 5 ? "…" : "")）"))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
             Button {
-                model.currentProfile = bundle
-                selection = .mapping
+                detailProfile = ProfileDetailSelection(id: bundle)
             } label: {
-                Image(systemName: "chevron.right").foregroundStyle(.secondary).font(.caption)
+                HStack(spacing: 10) {
+                    appIcon(bundle)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(profileDisplayName(bundle)).font(.callout)
+                        Text("继承全局 · 已覆盖 \(overrides.count) 项" +
+                             (names.isEmpty ? "" : "（\(names.prefix(5).joined(separator: "、"))\(names.count > 5 ? "…" : "")）"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("查看详情").font(.caption).foregroundStyle(Color.accentColor)
+                    Image(systemName: "chevron.right").foregroundStyle(.secondary).font(.caption)
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             Button {
@@ -163,6 +175,10 @@ struct ProfilePage: View {
         alert.informativeText = message
         alert.runModal()
     }
+}
+
+private struct ProfileDetailSelection: Identifiable {
+    let id: String
 }
 
 // MARK: - 从运行中的 App 添加

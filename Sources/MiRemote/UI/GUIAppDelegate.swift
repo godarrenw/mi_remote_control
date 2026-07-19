@@ -12,6 +12,7 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var statusController: StatusItemController?
     private var badgeController: FloatingBadgeController?
+    private var mappingQuickLookController: MappingQuickLookController?
 
     init(uiPreview: Bool) {
         self.uiPreview = uiPreview
@@ -24,12 +25,14 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         var opts = AppServices.Options()
         opts.keys = true
+        opts.perAppVoiceRouting = true
         let levelSink = LevelMeterSink()
         opts.levelSink = levelSink
         let services = AppServices(options: opts)
         self.services = services
 
         model = AppModel(services: services)
+        mappingQuickLookController = MappingQuickLookController(model: model)
 
         // 服务事件 → 主线程 → AppModel
         wireCallbacks(services: services, levelSink: levelSink)
@@ -179,6 +182,13 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             km.onButtonEvent = { [weak self] ev in
                 DispatchQueue.main.async { self?.model.noteButton(ev) }
+            }
+            km.onMappingQuickLook = { [weak self] visible, bundleID, appName in
+                DispatchQueue.main.async {
+                    self?.mappingQuickLookController?.setVisible(visible,
+                                                                bundleID: bundleID,
+                                                                appName: appName)
+                }
             }
             // IOHID 原始通道：全部 13 键的「按下即亮」与识别按键都靠它。
             filter.onRawButton = { [weak self] ev in

@@ -56,6 +56,18 @@ struct GeneralPage: View {
                                 subtitle: "退出前提示「已恢复真实键盘」") {
                         Toggle("", isOn: $model.exitConfirm).toggleStyle(.switch).labelsHidden()
                     }
+                    RowDivider()
+                    SettingsRow(icon: "delete.left", title: "长按删除：清空输入",
+                                subtitle: "默认关闭；开启后长按删除会先全选再删除，短按始终是普通删除") {
+                        Toggle("", isOn: Binding(
+                            get: { model.config.settings.deleteAllOnHold == true },
+                            set: { enabled in
+                                model.config.settings.deleteAllOnHold = enabled ? true : nil
+                                model.saveConfig()
+                            }))
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                    }
                 }
 
                 DisclosureGroup {
@@ -85,6 +97,9 @@ struct GeneralPage: View {
                                     .frame(width: 56, alignment: .trailing)
                             }
                             Text("双击窗口 = 0 关闭双击，短按零延迟触发")
+                                .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("基础状态为文字输入：方向、确认、删除固定保持原生语义；App 快捷动作仅在第二功能/导航模式或明确组合手势中生效。")
                                 .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }

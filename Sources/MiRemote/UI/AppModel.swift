@@ -282,6 +282,32 @@ final class AppModel: ObservableObject {
         saveConfig()
     }
 
+    /// App 未单独配置语音快捷键时继承全局；全局缺失则使用安全默认值。
+    func voiceRule(for profile: String) -> VoiceTriggerRule {
+        config.voiceProfiles?[profile]
+            ?? config.voiceProfiles?["global"]
+            ?? VoiceTriggerRule()
+    }
+
+    func hasCustomVoiceRule(for profile: String) -> Bool {
+        profile == "global" || config.voiceProfiles?[profile] != nil
+    }
+
+    func updateVoiceRule(for profile: String, _ mutate: (inout VoiceTriggerRule) -> Void) {
+        var rules = config.voiceProfiles ?? [:]
+        var rule = rules[profile] ?? rules["global"] ?? VoiceTriggerRule()
+        mutate(&rule)
+        rules[profile] = rule
+        config.voiceProfiles = rules
+        saveConfig()
+    }
+
+    func resetVoiceRuleToGlobal(for profile: String) {
+        guard profile != "global" else { return }
+        config.voiceProfiles?.removeValue(forKey: profile)
+        saveConfig()
+    }
+
     /// 写回 config.json → 引擎热加载 → inline「已保存」提示。
     func saveConfig() {
         if ConfigStore.save(config, to: configURL) {

@@ -3,6 +3,22 @@ import SwiftUI
 @MainActor
 struct VoicePage: View {
     @EnvironmentObject var model: AppModel
+    @State private var selectedProfile = "global"
+    @State private var showAddApp = false
+
+    private let triggerKeys: [(String, String)] = [
+        ("right_option", "右 Option ⌥（推荐）"), ("left_option", "左 Option ⌥"),
+        ("f13", "F13（Typeless / Superwhisper 常用）"), ("f5", "F5"), ("fn", "Fn"),
+        ("right_cmd", "右 Command ⌘"), ("left_cmd", "左 Command ⌘"),
+        ("right_ctrl", "右 Control ⌃"), ("left_ctrl", "左 Control ⌃"),
+        ("right_shift", "右 Shift ⇧"), ("left_shift", "左 Shift ⇧"),
+    ]
+
+    private var selectableProfiles: [String] {
+        ["global"] + model.config.profiles.keys.filter { $0 != "global" }.sorted {
+            profileDisplayName($0) < profileDisplayName($1)
+        }
+    }
 
     private var blackHoleInstalled: Bool {
         EnvironmentCheck.blackHole().state == .granted
@@ -13,7 +29,7 @@ struct VoicePage: View {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("语音").font(.system(size: 22, weight: .bold))
-                    Text("选择语音输入的音频来源，语音识别文字工作交给豆包输入法完成。")
+                    Text("选择音频来源，并为不同 App 自动发送各自的语音输入快捷键。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -32,6 +48,75 @@ struct VoicePage: View {
                     RowDivider()
                     modeRow(.off, title: "关闭",
                             subtitle: "语音键可另行映射为普通按键")
+                }
+
+                SettingsGroup(title: "按 App 的语音快捷键") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("适用 App").font(.callout)
+                            Spacer()
+                            Picker("", selection: $selectedProfile) {
+                                ForEach(selectableProfiles, id: \.self) { profile in
+                                    Text(profileDisplayName(profile)).tag(profile)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 250)
+                            Button { showAddApp = true } label: {
+                                Image(systemName: "plus")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("从运行中的 App 添加")
+                        }
+                        RowDivider()
+                        HStack {
+                            Text("触发按键").font(.callout)
+                            Spacer()
+                            Picker("", selection: triggerKeyBinding) {
+                                ForEach(triggerKeys, id: \.0) { item in Text(item.1).tag(item.0) }
+                            }
+                            .labelsHidden()
+                            .frame(width: 250)
+                        }
+                        HStack {
+                            Text("触发方式").font(.callout)
+                            Spacer()
+                            Picker("", selection: triggerModeBinding) {
+                                Text("按住说话").tag("hold")
+                                Text("单击开始 / 再击结束").tag("tap")
+                                Text("双击开始 / 单击结束").tag("double")
+                            }
+                            .labelsHidden()
+                            .frame(width: 250)
+                        }
+                        HStack {
+                            Text("语音工具").font(.callout)
+                            Spacer()
+                            Picker("", selection: imeModeBinding) {
+                                Text("豆包输入法（自动切换）").tag("doubao")
+                                Text("独立语音 App（不切输入法）").tag("standalone")
+                            }
+                            .labelsHidden()
+                            .frame(width: 250)
+                        }
+                        if selectedProfile != "global" {
+                            HStack {
+                                Text(model.hasCustomVoiceRule(for: selectedProfile)
+                                     ? "此 App 使用独立设置" : "此 App 正在继承全局设置")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                if model.hasCustomVoiceRule(for: selectedProfile) {
+                                    Button("恢复继承全局") {
+                                        model.resetVoiceRuleToGlobal(for: selectedProfile)
+                                    }
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                        Text("这里设置的是遥控器开始传音时，MiRemote 向当前 App 发送的快捷键。请先在对应语音工具里设成同一个键。")
+                            .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                    }
+                    .padding(14)
                 }
 
                 SettingsGroup(title: "BlackHole 虚拟声卡") {
@@ -70,6 +155,29 @@ struct VoicePage: View {
             }
             .padding(24)
         }
+        .sheet(isPresented: $showAddApp) { AddRunningAppSheet() }
+    }
+
+    private var triggerKeyBinding: Binding<String> {
+        Binding(get: { model.voiceRule(for: selectedProfile).keyName }, set: { value in
+            model.updateVoiceRule(for: selectedProfile) { $0.keyName = value }
+        })
+    }
+
+    private var triggerModeBinding: Binding<String> {
+        Binding(get: { model.voiceRule(for: selectedProfile).mode }, set: { value in
+            model.updateVoiceRule(for: selectedProfile) { $0.mode = value }
+        })
+    }
+
+    private var imeModeBinding: Binding<String> {
+        Binding(get: {
+            model.voiceRule(for: selectedProfile).imeBundlePrefix == nil ? "standalone" : "doubao"
+        }, set: { value in
+            model.updateVoiceRule(for: selectedProfile) {
+                $0.imeBundlePrefix = value == "standalone" ? nil : "com.bytedance.inputmethod"
+            }
+        })
     }
 
     @ViewBuilder

@@ -9,7 +9,7 @@ import CoreGraphics
 ///   double 双击开、单击关——豆包默认设置
 /// 可选先切输入法（豆包是 IME 需要切；独立 app 传 nil）。
 /// 需要「辅助功能」权限（合成 CGEvent）。
-struct VoiceTriggerConfig {
+struct VoiceTriggerConfig: Equatable {
     enum Mode: String { case hold, tap, double }
 
     var keyName: String = "right_option"
@@ -30,6 +30,17 @@ struct VoiceTriggerConfig {
         "f5":           (96, nil, nil),
         "f13":          (105, nil, nil),
     ]
+}
+
+/// 按前台 App 选择语音触发规则；无覆盖项时继承全局，坏值安全回退。
+enum VoiceTriggerRouting {
+    static func resolve(_ rules: [String: VoiceTriggerRule]?, bundleID: String?) -> VoiceTriggerConfig {
+        let fallback = VoiceTriggerRule()
+        let rule = bundleID.flatMap { rules?[$0] } ?? rules?["global"] ?? fallback
+        let key = VoiceTriggerConfig.keyTable[rule.keyName] == nil ? fallback.keyName : rule.keyName
+        let mode = VoiceTriggerConfig.Mode(rawValue: rule.mode) ?? .hold
+        return VoiceTriggerConfig(keyName: key, mode: mode, imeBundlePrefix: rule.imeBundlePrefix)
+    }
 }
 
 enum VoiceTrigger {
@@ -133,8 +144,9 @@ enum VoiceTrigger {
     private static let releaseDebounceMs = 250
 
     /// 遥控器语音键按下
-    static func begin() {
+    static func begin(config newConfig: VoiceTriggerConfig? = nil) {
         queue.async {
+            if let newConfig { config = newConfig }
             releaseWork?.cancel()
             releaseWork = nil
             switch config.mode {

@@ -151,16 +151,30 @@ struct KeyBinding: Codable {
     var layers: [String: Action]?     // "1" → 层1 激活时的 tap 替代
 }
 
+/// 遥控器开始传音频时，要向当前 App 发送的语音工具快捷键。
+/// App 未单独配置时继承 `voiceProfiles["global"]`。
+struct VoiceTriggerRule: Codable, Equatable {
+    var keyName: String = "right_option"
+    var mode: String = "hold"
+    /// nil 表示独立语音 App（不切输入法）；豆包输入法使用其 bundle id 前缀。
+    var imeBundlePrefix: String? = "com.bytedance.inputmethod"
+}
+
 struct MappingConfig: Codable {
-    static let currentVersion = 2
+    static let currentVersion = 3
     struct Settings: Codable {
         var holdMs: Int = 350
         var doubleMs: Int = 300      // 给 TV 双击切 AI 模式留出可操作窗口
+        /// 基础文字输入态下，长按返回/删除是否执行“全选并删除”。nil 与 false 等价，
+        /// 使用 Optional 以兼容旧版 config.json 的自动解码。
+        var deleteAllOnHold: Bool? = nil
     }
     var version: Int = currentVersion
     var settings: Settings = Settings()
     /// profile 名 → (键名 → 绑定)；"global" 必在，其余为 bundle id 覆盖层
     var profiles: [String: [String: KeyBinding]] = [:]
+    /// profile 名 → 语音触发规则；缺少某 App 时继承 global。Optional 保证 v1/v2 可直接解码。
+    var voiceProfiles: [String: VoiceTriggerRule]? = nil
 }
 
 /// 动作执行器（ActionRunner 实现；MappingEngine 调用）

@@ -423,9 +423,29 @@ enum SelfTest {
                    "v1 迁移补齐六个高频 Profile")
 
             var alreadyV2 = migrated
+            alreadyV2.version = 2
+            alreadyV2.voiceProfiles = nil
             alreadyV2.profiles.removeValue(forKey: "com.mitchellh.ghostty")
-            expect(migrateConfigIfNeeded(alreadyV2).profiles["com.mitchellh.ghostty"] == nil,
-                   "v2 用户删除 Profile 后不再强制补回")
+            let migratedV3 = migrateConfigIfNeeded(alreadyV2)
+            expect(migratedV3.profiles["com.mitchellh.ghostty"] == nil,
+                   "v2→v3 不补回用户删除的 Profile")
+            expect(migratedV3.version == 3
+                   && migratedV3.voiceProfiles?["global"] == VoiceTriggerRule(),
+                   "v2→v3 补全全局语音触发规则")
+
+            var voiceRules = migratedV3.voiceProfiles ?? [:]
+            voiceRules["com.example.writer"] = VoiceTriggerRule(
+                keyName: "f13", mode: "tap", imeBundlePrefix: nil)
+            let appVoice = VoiceTriggerRouting.resolve(voiceRules, bundleID: "com.example.writer")
+            let inheritedVoice = VoiceTriggerRouting.resolve(voiceRules, bundleID: "com.example.other")
+            expect(appVoice == VoiceTriggerConfig(keyName: "f13", mode: .tap, imeBundlePrefix: nil),
+                   "语音快捷键按 App 覆盖")
+            expect(inheritedVoice == VoiceTriggerConfig(), "未配置 App 继承全局语音快捷键")
+            voiceRules["com.example.bad"] = VoiceTriggerRule(
+                keyName: "invalid", mode: "invalid", imeBundlePrefix: nil)
+            let safeVoice = VoiceTriggerRouting.resolve(voiceRules, bundleID: "com.example.bad")
+            expect(safeVoice.keyName == "right_option" && safeVoice.mode == .hold,
+                   "坏语音按键/模式安全回退")
         }
 
         // 加固-1. Action 严格解码：未知 type 抛错（拼写错误不再伪装成 .none），显式 none 正常。

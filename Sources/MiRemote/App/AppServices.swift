@@ -69,19 +69,26 @@ func loadOrCreateConfig(at path: String? = nil) -> MappingConfig {
     return cfg
 }
 
-/// v1 → v2：只填空位，给既有用户补齐手势、AI 模式入口和内置 App Profile。
-/// 版本只迁移一次，因此用户日后主动删除某个 Profile 不会被下次启动重新加回来。
+/// 分阶段迁移；每一阶段只执行一次，用户日后主动删除的 Profile 不会被补回。
 func migrateConfigIfNeeded(_ input: MappingConfig) -> MappingConfig {
     guard input.version < MappingConfig.currentVersion else { return input }
     var cfg = input
-    if cfg.profiles["global"] == nil { cfg.profiles["global"] = [:] }
-    for preset in Presets.all { Presets.apply(preset, to: &cfg) }
-    // v2 导航交互的明确入口：菜单键点按开关导航模式。旧动作仍可在模式内重新绑定。
-    var menu = cfg.profiles["global"]?["menu"] ?? KeyBinding()
-    menu.tap = .layerToggle(3)
-    cfg.profiles["global"]?["menu"] = menu
-    if cfg.settings.doubleMs < 150 { cfg.settings.doubleMs = 300 }
-    cfg.version = MappingConfig.currentVersion
+    if cfg.version < 2 {
+        if cfg.profiles["global"] == nil { cfg.profiles["global"] = [:] }
+        for preset in Presets.all { Presets.apply(preset, to: &cfg) }
+        // 导航交互的明确入口：菜单键点按开关导航模式。
+        var menu = cfg.profiles["global"]?["menu"] ?? KeyBinding()
+        menu.tap = .layerToggle(3)
+        cfg.profiles["global"]?["menu"] = menu
+        if cfg.settings.doubleMs < 150 { cfg.settings.doubleMs = 300 }
+        cfg.version = 2
+    }
+    if cfg.version < 3 {
+        var rules = cfg.voiceProfiles ?? [:]
+        if rules["global"] == nil { rules["global"] = VoiceTriggerRule() }
+        cfg.voiceProfiles = rules
+        cfg.version = 3
+    }
     return cfg
 }
 
@@ -90,6 +97,7 @@ func defaultConfig() -> MappingConfig {
     // 返回=退格，菜单=调度中心，主页=启动台，TV=打开系统设置，电源=熄屏，音量=系统音量。
     // 语音键放行给 ATVV。
     var cfg = MappingConfig()
+    cfg.voiceProfiles = ["global": VoiceTriggerRule()]
     cfg.profiles["global"] = [
         "up":      KeyBinding(tap: .keyStroke(key: "up_arrow", mods: []),
                               layers: ["1": .system("volume_up")]),
@@ -158,6 +166,8 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
     /// GUI 状态反馈钩子（ATVV 队列回调）。
     var onConnection: ((Bool, String?) -> Void)?
     var onVoiceActive: ((Bool) -> Void)?
+    /// GUI 注入：在一次语音会话开始时，按最近的前台 App 解析快捷键。
+    var resolveTriggerConfig: (() -> VoiceTriggerConfig)?
 
     init(outputName: String?, wavPath: String?, gainDB: Double, verbose: Bool,
          switchInput: Bool, doubao: Bool, extraSink: PCMSink? = nil) {
@@ -230,7 +240,7 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         if pendingTrigger {
             pendingTrigger = false
             triggered = true
-            VoiceTrigger.begin()
+            VoiceTrigger.begin(config: resolveTriggerConfig?())
         }
         if let sync {
             decoder.reset(predictor: sync.predictor, stepIndex: sync.stepIndex)
@@ -251,6 +261,11 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
     var onSeizeState: ((Bool) -> Void)?
     /// 引擎路径上的每个按键事件（GUI「按下即亮」）。回调线程=事件来源线程。
     var onButtonEvent: ((ButtonEvent) -> Void)?
+    var onActiveApplication: ((String?) -> Void)?
+    /// GUI 提供；true=打开当前 App 映射速查，false=关闭。
+    var onMappingQuickLook: ((Bool, String?, String?) -> Void)?
+
+    private let homeQuickLook = HomeQuickLookGesture()
 
     /// 最近一个「非本进程」的前台应用（防止本 App 自己的设置窗口污染 per-app profile）。
     private(set) var lastExternalApplication: NSRunningApplication?
@@ -263,6 +278,7 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
         if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != myPid {
             lastExternalApplication = front
             engine.setActiveProfile(front.bundleIdentifier)
+            onActiveApplication?(front.bundleIdentifier)
         }
         // 前台 app 变化 → 自动切 profile。忽略本进程（设置窗口拿到前台不改 profile）。
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -272,6 +288,7 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
                   app.processIdentifier != myPid else { return }
             self.lastExternalApplication = app
             self.engine.setActiveProfile(app.bundleIdentifier)
+            self.onActiveApplication?(app.bundleIdentifier)
         }
     }
 
@@ -279,7 +296,25 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
     func hidButton(_ event: ButtonEvent) {
         if verbose { log("KEY \(event.key.rawValue) \(event.isDown ? "↓" : "↑")") }
         onButtonEvent?(event)
+        if event.key == .home, onMappingQuickLook != nil {
+            let app = lastExternalApplication
+            homeQuickLook.handle(event,
+                                 bundleID: app?.bundleIdentifier,
+                                 appName: app?.localizedName,
+                                 onToggle: { [weak self] visible, bundleID, appName in
+                                     self?.onMappingQuickLook?(visible, bundleID, appName)
+                                 },
+                                 forwardShortPress: { [weak self] down, up in
+                                     self?.engine.handle(down)
+                                     self?.engine.handle(up)
+                                 })
+            return
+        }
         engine.handle(event)
+    }
+
+    func updateHoldThreshold(_ milliseconds: Int) {
+        homeQuickLook.updateHoldThreshold(milliseconds)
     }
     func hidSeizeState(_ exclusive: Bool) {
         log(exclusive ? "按键已独占接管" : "按键降级为监听模式（系统仍会响应原始按键）")
@@ -289,6 +324,103 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
     func layerChanged(_ layer: Int) {
         log("层 → \(layer)")
         onLayerChanged?(layer)
+    }
+}
+
+/// Home 是系统级速查手势：先缓冲一次按压，短按完整转交映射引擎；长按只开浮层。
+/// 浮层已开时下一次 Home 的 keyDown 立即关闭，并吞掉该次 keyUp，绝不会误发原动作。
+private final class HomeQuickLookGesture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var thresholdMs = 350
+    private var generation = 0
+    private var isDown = false
+    private var didOpenOnThisPress = false
+    private var overlayVisible = false
+    private var swallowRelease = false
+
+    func updateHoldThreshold(_ milliseconds: Int) {
+        lock.lock(); thresholdMs = max(200, milliseconds); lock.unlock()
+    }
+
+    func handle(_ event: ButtonEvent,
+                bundleID: String?, appName: String?,
+                onToggle: @escaping (Bool, String?, String?) -> Void,
+                forwardShortPress: @escaping (ButtonEvent, ButtonEvent) -> Void) {
+        if event.isDown {
+            lock.lock()
+            if overlayVisible {
+                overlayVisible = false
+                swallowRelease = true
+                isDown = false
+                generation &+= 1
+                lock.unlock()
+                onToggle(false, bundleID, appName)
+                return
+            }
+            // 忽略键盘自动重复产生的重复 keyDown。
+            guard !isDown else { lock.unlock(); return }
+            isDown = true
+            didOpenOnThisPress = false
+            generation &+= 1
+            let token = generation
+            let delay = thresholdMs
+            lock.unlock()
+
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                guard self.isDown, self.generation == token, !self.overlayVisible else {
+                    self.lock.unlock(); return
+                }
+                self.didOpenOnThisPress = true
+                self.overlayVisible = true
+                self.lock.unlock()
+                onToggle(true, bundleID, appName)
+            }
+            return
+        }
+
+        lock.lock()
+        if swallowRelease {
+            swallowRelease = false
+            lock.unlock()
+            return
+        }
+        guard isDown else { lock.unlock(); return }
+        isDown = false
+        generation &+= 1
+        let wasLongPress = didOpenOnThisPress
+        didOpenOnThisPress = false
+        lock.unlock()
+
+        if !wasLongPress {
+            // MappingEngine 只依赖事件顺序；在松开时补成对事件，可保留 tap/double 语义。
+            let down = ButtonEvent(key: .home, isDown: true, timeNs: event.timeNs)
+            forwardShortPress(down, event)
+        }
+    }
+}
+
+/// 主线程写配置/前台 App，蓝牙队列读；用锁隔离跨线程状态。
+private final class VoiceRuleStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var rules: [String: VoiceTriggerRule]?
+    private var bundleID: String?
+
+    func update(config: MappingConfig) {
+        lock.lock(); rules = config.voiceProfiles; lock.unlock()
+    }
+
+    func update(bundleID: String?) {
+        lock.lock(); self.bundleID = bundleID; lock.unlock()
+    }
+
+    func resolve() -> VoiceTriggerConfig {
+        lock.lock()
+        let snapshotRules = rules
+        let snapshotBundle = bundleID
+        lock.unlock()
+        return VoiceTriggerRouting.resolve(snapshotRules, bundleID: snapshotBundle)
     }
 }
 
@@ -323,6 +455,8 @@ final class AppServices {
         var switchInput = true
         var doubao = false
         var keys = false
+        /// GUI 开启；CLI 保留 --trigger-key/--trigger-mode/--ime 的全局覆盖行为。
+        var perAppVoiceRouting = false
         var configPath: String?
         /// GUI 附加：电平表 sink
         var levelSink: PCMSink?
@@ -337,6 +471,7 @@ final class AppServices {
     private(set) var hidFilter: IOHIDOnlyFilter?
     private(set) var hidEngine: HIDEngine?
     private(set) var started = false
+    private let voiceRuleStore = VoiceRuleStore()
 
     init(options: Options) {
         self.options = options
@@ -368,7 +503,19 @@ final class AppServices {
             break
         }
         if options.keys {
-            let km = KeyMapperApp(config: loadOrCreateConfig(at: options.configPath), verbose: options.verbose)
+            let config = loadOrCreateConfig(at: options.configPath)
+            voiceRuleStore.update(config: config)
+            let km = KeyMapperApp(config: config, verbose: options.verbose)
+            km.updateHoldThreshold(config.settings.holdMs)
+            voiceRuleStore.update(bundleID: km.lastExternalApplication?.bundleIdentifier)
+            km.onActiveApplication = { [weak voiceRuleStore] bundleID in
+                voiceRuleStore?.update(bundleID: bundleID)
+            }
+            if options.perAppVoiceRouting {
+                voiceApp.resolveTriggerConfig = { [weak voiceRuleStore] in
+                    voiceRuleStore?.resolve() ?? VoiceTriggerConfig()
+                }
+            }
             let tap = TapEngine(delegate: km)
             tap.router = km.engine  // 方向键三态分流的快照来源
             let filter = IOHIDOnlyFilter(km)
@@ -419,6 +566,8 @@ final class AppServices {
 
     /// 热加载映射配置（UI 写回 config.json 后调用）。
     func applyConfig(_ config: MappingConfig) {
+        voiceRuleStore.update(config: config)
+        keyMapper?.updateHoldThreshold(config.settings.holdMs)
         keyMapper?.engine.setConfig(config)
     }
 

@@ -109,14 +109,10 @@ final class MappingEngine: @unchecked Sendable {
     /// 在引擎 queue 内重算并整体替换快照。调用时机：init、setConfig、setActiveProfile、
     /// 生效层变化、ok 物理按下/松开。
     private func publishTapRoute() {
-        var native: Set<RemoteKey> = []
-        for key in [RemoteKey.up, .down, .left, .right] {
-            if let b = binding(for: key),
-               b.hold == nil, b.double == nil,
-               b.tap == .keyStroke(key: Self.nativeArrowName[key]!, mods: []) {
-                native.insert(key)
-            }
-        }
+        // 基础状态是“文字输入态”：Profile 不能接管四方向的短按语义。
+        // 只有第二功能/导航模式（layer != 0），或用户明确按住 OK 组成手势时，
+        // 方向键才进入映射引擎。直接改写能保留系统原生 autorepeat 与零延迟。
+        let native: Set<RemoteKey> = [.up, .down, .left, .right]
         let route = TapRoute(effectiveLayer: effectiveLayer,
                              okDown: okPhysicallyDown,
                              nativeDirections: native)
@@ -274,7 +270,7 @@ final class MappingEngine: @unchecked Sendable {
             st.seq &+= 1                 // 作废在途的 double→tap 定时器
             st.phase = .consumed         // 吞掉这次按压的松开
             states[key] = st
-            perform(binding(for: key)?.double, key: key, isHold: false)
+            perform(doubleAction(for: key), key: key, isHold: false)
             log("DOUBLE \(key)")
             return
         }
@@ -296,7 +292,22 @@ final class MappingEngine: @unchecked Sendable {
         guard var st = states[key], st.seq == token, st.phase == .down, !st.holdFired else { return }
         st.holdFired = true
         states[key] = st
-        perform(binding(for: key)?.hold, key: key, isHold: true)
+        // 基础文字输入态保护删除键：Profile 的 hold 不能篡改它。用户明确打开开关时，
+        // 长按执行“全选 + 删除”；默认关闭时仍只发送普通 Delete。
+        if key == .back, effectiveLayer == 0 {
+            if config.settings.deleteAllOnHold == true {
+                runner.run(.macro(steps: [
+                    .action(.keyStroke(key: "a", mods: ["left_cmd"])),
+                    .action(.keyStroke(key: "delete", mods: [])),
+                ]))
+            } else {
+                // 返回键的原始 HID usage 无法经 hidutil 直通；默认长按至少保持普通 Delete，
+                // 绝不执行 Profile 的自定义 hold。
+                runner.run(.keyStroke(key: "delete", mods: []))
+            }
+        } else {
+            perform(binding(for: key)?.hold, key: key, isHold: true)
+        }
         log("HOLD \(key)")
     }
 
@@ -334,7 +345,7 @@ final class MappingEngine: @unchecked Sendable {
                 states[key] = st
             } else {
                 // 短按候选。配了 double 且 doubleMs>0 → 进等待窗口；否则零延迟发 tap。
-                let hasDouble = binding(for: key)?.double != nil
+                let hasDouble = doubleAction(for: key) != nil
                 if hasDouble, config.settings.doubleMs > 0 {
                     st.phase = .waitingDouble
                     let token = st.seq
@@ -369,6 +380,15 @@ final class MappingEngine: @unchecked Sendable {
         let action: Action?
         if layer != 0, let layered = b?.layers?["\(layer)"] {
             action = layered
+        } else if layer == 0, key == .ok {
+            // 基础状态固定为系统确认/换行；App Profile 只能在功能模式中覆盖。
+            action = .keyStroke(key: "return", mods: [])
+        } else if layer == 0, key == .back {
+            // 无论是否启用长按删除全部，短按都必须是普通 Delete。
+            action = .keyStroke(key: "delete", mods: [])
+        } else if layer == 0, let arrow = Self.nativeArrowName[key] {
+            // 通常由 TapEngine 原生直通；OK 手势未命中等回退路径仍保持光标语义。
+            action = .keyStroke(key: arrow, mods: [])
         } else {
             action = b?.tap
         }
@@ -442,6 +462,22 @@ final class MappingEngine: @unchecked Sendable {
             merged.layers = layers
         }
         return merged
+    }
+
+    /// 基础文字输入态不允许 Profile 通过 double 槽绕过方向/确认/删除保护。
+    /// OK 的 layerToggle 仍是明确进入第二功能的入口，因此保留。
+    private func doubleAction(for key: RemoteKey) -> Action? {
+        let action = binding(for: key)?.double
+        guard effectiveLayer == 0 else { return action }
+        switch key {
+        case .up, .down, .left, .right, .back:
+            return nil
+        case .ok:
+            if case .layerToggle = action { return action }
+            return nil
+        default:
+            return action
+        }
     }
 
     private func isDirection(_ k: RemoteKey) -> Bool {
@@ -552,30 +588,32 @@ extension MappingEngine {
         func down(_ e: MappingEngine, _ k: RemoteKey) { e.handle(ButtonEvent(key: k, isDown: true, timeNs: 0)) }
         func up(_ e: MappingEngine, _ k: RemoteKey)   { e.handle(ButtonEvent(key: k, isDown: false, timeNs: 0)) }
 
-        // 场景 A：仅 tap、无 double → 松开即刻发 tap（escape）。
+        // 场景 A：基础文字输入态保护返回键，Profile 写成 escape 也只能产出 Delete。
         do {
             let (e, r, _, c) = makeEngine()
             down(e, .back); c.advance(10); up(e, .back)
-            expect(r.actions == [.keyStroke(key: "escape", mods: [])], "A simple tap immediate")
+            expect(r.actions == [.keyStroke(key: "delete", mods: [])], "A protected delete tap immediate")
         }
 
-        // 场景 B：配了 double，等满窗口无第二次 → 发 tap（up_arrow）。
+        // 场景 B：基础方向即使 Profile 配了 double，也不等待窗口，立即保持光标移动。
         do {
             let (e, r, _, c) = makeEngine()
             down(e, .up); c.advance(10); up(e, .up)
-            expect(r.actions.isEmpty, "B tap deferred until double window")
+            expect(r.actions == [.keyStroke(key: "up_arrow", mods: [])], "B protected arrow is immediate")
             c.advance(80)
-            expect(r.actions == [.keyStroke(key: "up_arrow", mods: [])], "B tap fires after window")
+            expect(r.actions == [.keyStroke(key: "up_arrow", mods: [])], "B no delayed extra action")
         }
 
-        // 场景 C：窗口内第二次按下 → 双击（page_up），不发 tap。
+        // 场景 C：基础方向的两次点按就是两次光标移动，不能变成 Profile 双击动作。
         do {
             let (e, r, _, c) = makeEngine()
-            down(e, .up); c.advance(10); up(e, .up)   // 首次 tap → waitingDouble
+            down(e, .up); c.advance(10); up(e, .up)
             c.advance(40)                              // 窗口内
-            down(e, .up); c.advance(10); up(e, .up)   // 第二次 → 双击
-            c.advance(100)                             // 确认无 tap 补发
-            expect(r.actions == [.keyStroke(key: "page_up", mods: [])], "C double only, no tap")
+            down(e, .up); c.advance(10); up(e, .up)
+            c.advance(100)
+            expect(r.actions == [.keyStroke(key: "up_arrow", mods: []),
+                                 .keyStroke(key: "up_arrow", mods: [])],
+                   "C double cannot replace base cursor movement")
         }
 
         // 场景 D：ok 长按进瞬时层1 → 无手势绑定的 down 走模式覆盖(k) → 松开回落。
@@ -616,6 +654,34 @@ extension MappingEngine {
             down(e, .tv); c.advance(100); up(e, .tv)   // toggle → 层0
             expect(d.layers == [2, 0], "F toggle layer on/off")
             expect(r.actions.isEmpty, "F no tap fired while holding")
+        }
+
+        // 场景 F2：基础态 OK/back 的 App overlay 不能篡改；长按清空仅由显式设置开启。
+        do {
+            var cfg = makeTestConfig()
+            cfg.profiles["com.example.unsafe"] = [
+                "ok": KeyBinding(tap: .shell("unsafe-ok"), double: .shell("unsafe-ok-double")),
+                "back": KeyBinding(tap: .shell("unsafe-back"), hold: .shell("unsafe-hold"),
+                                   double: .shell("unsafe-back-double")),
+            ]
+            let c = ManualClock()
+            let r = RecordingRunner()
+            let e = MappingEngine(config: cfg, runner: r, delegate: nil,
+                                  dispatch: { $0() }, scheduleAfter: { ms, work in c.schedule(ms, work) })
+            e.setActiveProfile("com.example.unsafe")
+            down(e, .ok); c.advance(10); up(e, .ok)
+            down(e, .back); c.advance(10); up(e, .back)
+            expect(r.actions == [.keyStroke(key: "return", mods: []),
+                                 .keyStroke(key: "delete", mods: [])],
+                   "F2 base confirm/delete ignore unsafe overlay")
+
+            cfg.settings.deleteAllOnHold = true
+            e.setConfig(cfg)
+            down(e, .back); c.advance(100); up(e, .back)
+            expect(r.actions.last == .macro(steps: [
+                .action(.keyStroke(key: "a", mods: ["left_cmd"])),
+                .action(.keyStroke(key: "delete", mods: [])),
+            ]), "F2 delete-all hold requires explicit setting")
         }
 
         // 场景 G：App Profile 只覆盖 OK.tap 时，仍继承 global 的 OK.gesture。
@@ -678,18 +744,18 @@ extension MappingEngine {
         func down(_ k: RemoteKey) { engine.handle(ButtonEvent(key: k, isDown: true, timeNs: 0)) }
         func up(_ k: RemoteKey)   { engine.handle(ButtonEvent(key: k, isDown: false, timeNs: 0)) }
 
-        // 1) 初始快照：层0、ok 未按、up/down/left 纯原生、right 不是（有 double）。
+        // 1) 初始快照：基础文字输入态四方向全部强制原生，Profile 的 double/hold 不接管。
         var r = engine.tapRoute
         expect(r.effectiveLayer == 0 && !r.okDown, "1 initial layer/ok")
-        expect(r.nativeDirections == [.up, .down, .left], "1 nativeDirections")
+        expect(r.nativeDirections == [.up, .down, .left, .right], "1 all directions native in text mode")
 
         // 2) 判定：纯原生方向 → 改写放行（含 autorepeat 也由 TapEngine 按压记录跟随）。
         expect(KeyRemapper.directionVerdict(key: .up, isRepeat: false, route: r) == .rewrite(126),
                "2 up → rewrite(126)")
-        expect(KeyRemapper.directionVerdict(key: .right, isRepeat: false, route: r) == .engine,
-               "2 right(有double) → engine")
-        expect(KeyRemapper.directionVerdict(key: .right, isRepeat: true, route: r) == .drop,
-               "2 right autorepeat → drop")
+        expect(KeyRemapper.directionVerdict(key: .right, isRepeat: false, route: r) == .rewrite(124),
+               "2 right profile double ignored in text mode")
+        expect(KeyRemapper.directionVerdict(key: .right, isRepeat: true, route: r) == .rewrite(124),
+               "2 right autorepeat remains native")
         expect(KeyRemapper.directionVerdict(key: .ok, isRepeat: false, route: r) == nil,
                "2 非方向键 → nil")
 
@@ -717,17 +783,17 @@ extension MappingEngine {
         down(.tv); clock.advance(100); up(.tv)
         expect(engine.tapRoute.effectiveLayer == 0, "5 unlocked")
 
-        // 6) setActiveProfile overlay：down 被 overlay 覆盖成带 hold → 失去纯原生；切回还原。
+        // 6) setActiveProfile overlay：基础文字输入态仍保护四方向。
         engine.setActiveProfile("com.example.app")
-        expect(engine.tapRoute.nativeDirections == [.up, .left], "6 overlay drops down")
+        expect(engine.tapRoute.nativeDirections == [.up, .down, .left, .right], "6 overlay cannot capture arrows")
         engine.setActiveProfile(nil)
-        expect(engine.tapRoute.nativeDirections == [.up, .down, .left], "6 restore on global")
+        expect(engine.tapRoute.nativeDirections == [.up, .down, .left, .right], "6 global arrows remain native")
 
-        // 7) setConfig 热加载：up 增加 hold → 失去纯原生。
+        // 7) setConfig 热加载：即使 up 增加 hold，基础态仍不能接管。
         var cfg2 = makeConfig()
         cfg2.profiles["global"]?["up"]?.hold = .system("mute")
         engine.setConfig(cfg2)
-        expect(engine.tapRoute.nativeDirections == [.down, .left], "7 config reload drops up")
+        expect(engine.tapRoute.nativeDirections == [.up, .down, .left, .right], "7 config cannot capture base arrows")
 
         if ok { print("[MappingEngine.tapRouteSelfCheck] all scenarios passed") }
         return ok
@@ -770,7 +836,7 @@ extension MappingEngine {
 
         // 3) reset 后正常按键流程不受影响。
         down(.back); clock.advance(10); up(.back)
-        expect(runner.actions == [.keyStroke(key: "escape", mods: [])], "3 reset 后正常 tap")
+        expect(runner.actions == [.keyStroke(key: "delete", mods: [])], "3 reset 后受保护 Delete 正常 tap")
 
         if ok { print("[MappingEngine.resetSelfCheck] passed") }
         return ok
