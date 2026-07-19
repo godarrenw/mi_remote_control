@@ -9,6 +9,9 @@ import CoreGraphics
 /// 需要「辅助功能」权限（AXRaise）；无「屏幕录制」权限时窗口标题可能为空，仅影响标题匹配精度。
 enum WindowSwitcher {
 
+    static let visibleListOptions: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+    static let globalListOptions: CGWindowListOption = [.optionAll, .excludeDesktopElements]
+
     struct WindowInfo {
         let pid: pid_t
         let windowID: CGWindowID
@@ -31,15 +34,30 @@ enum WindowSwitcher {
 
     // MARK: - 窗口枚举
 
-    /// 可见窗口（layer 0，z 序前到后 ≈ MRU），排除本进程。
+    /// 当前桌面上的可见窗口（layer 0，z 序前到后 ≈ MRU）。
     static func visibleWindows() -> [WindowInfo] {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                    kCGNullWindowID) as? [[String: Any]] else { return [] }
+        windows(options: visibleListOptions)
+    }
+
+    /// 当前用户会话的全部普通 App 窗口，包括其他 Space/桌面和最小化窗口。
+    /// `.optionAll` 会返回很多 0×0 helper/menu-bar 表面，因此统一做尺寸和 App 类型过滤。
+    static func allWindows() -> [WindowInfo] {
+        windows(options: globalListOptions)
+    }
+
+    private static func windows(options: CGWindowListOption) -> [WindowInfo] {
+        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
+                as? [[String: Any]] else { return [] }
         let myPid = getpid()
         return list.compactMap { d in
             guard (d[kCGWindowLayer as String] as? Int) == 0,
                   let pid = d[kCGWindowOwnerPID as String] as? pid_t, pid != myPid,
-                  let wid = d[kCGWindowNumber as String] as? CGWindowID else { return nil }
+                  let wid = d[kCGWindowNumber as String] as? CGWindowID,
+                  let boundsDict = d[kCGWindowBounds as String] as? [String: Any],
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  bounds.width >= 80, bounds.height >= 60,
+                  let app = NSRunningApplication(processIdentifier: pid),
+                  app.activationPolicy == .regular, !app.isTerminated else { return nil }
             return WindowInfo(pid: pid, windowID: wid,
                               title: d[kCGWindowName as String] as? String ?? "")
         }
@@ -72,7 +90,7 @@ enum WindowSwitcher {
 
     /// 全局 MRU 循环：z 序第二个（≈上一个用过的）窗口所属 app 前置 + 按标题 AXRaise 精确定位。
     private static func cycleGlobal() {
-        guard let target = pickGlobalTarget(visibleWindows()),
+        guard let target = pickGlobalTarget(allWindows()),
               let app = NSRunningApplication(processIdentifier: target.pid) else { return }
         activateApplication(app) { activeApp in
             raiseMatchingWindow(target, app: activeApp)
@@ -96,9 +114,10 @@ enum WindowSwitcher {
 
     /// 选择器候选（z 序前到后 ≈ MRU）。
     /// - currentAppOnly=true：只列 pid == frontPid 的窗口（范围「当前 App」）。
-    /// - false：全部可见窗口（范围「所有 App」）。
+    /// - false：当前用户会话的所有 App 窗口，跨全部 Space/桌面。
     static func pickerEntries(currentAppOnly: Bool, frontPid: pid_t?) -> [PickerEntry] {
-        visibleWindows().compactMap { info in
+        let source = currentAppOnly ? visibleWindows() : allWindows()
+        return source.compactMap { info in
             if currentAppOnly, info.pid != frontPid { return nil }
             guard let app = NSRunningApplication(processIdentifier: info.pid) else { return nil }
             return PickerEntry(window: info,

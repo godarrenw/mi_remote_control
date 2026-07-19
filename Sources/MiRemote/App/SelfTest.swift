@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+import CoreGraphics
 
 // ponytail: CLT 不带 XCTest/Swift Testing，测试编进二进制用 --self-test 跑；装了 Xcode 后可迁回 testTarget
 
@@ -806,6 +807,13 @@ enum SelfTest {
 
         // v2-4. 浮层数据模型：系统功能菜单目录 + 网格移动纯逻辑。
         expect(SystemMenuCatalog.selfCheck(), "系统功能菜单目录/网格移动自测")
+        expect(WindowPickerFlow.nextAfterMenu(currentAppOnly: false) == true
+               && WindowPickerFlow.nextAfterMenu(currentAppOnly: true) == nil,
+               "窗口选择器菜单键：全局 → 当前 App → 关闭")
+        expect(WindowSwitcher.globalListOptions.rawValue == CGWindowListOption.excludeDesktopElements.rawValue
+               && !WindowSwitcher.globalListOptions.contains(.optionOnScreenOnly)
+               && WindowSwitcher.visibleListOptions.contains(.optionOnScreenOnly),
+               "窗口选择器全局范围使用 optionAll 跨桌面")
 
         // v2-5. 默认配置 v2 结构断言（DESIGN §3.1b 心智模型）。
         do {

@@ -121,12 +121,20 @@ final class OverlayUIState: ObservableObject {
     @Published var kind: OverlayCenter.Kind?
     @Published var pickerEntries: [WindowSwitcher.PickerEntry] = []
     @Published var pickerIndex = 0
-    @Published var pickerCurrentAppOnly = true
+    @Published var pickerCurrentAppOnly = false
     @Published var frontAppName: String?
     @Published var menuIndex = 0
     @Published var menuConfirming = false
     @Published var wheelEntries: [AppWheelView.Entry] = []
     @Published var wheelIndex = 0
+}
+
+/// 窗口选择器的菜单键三段流程：全局跨桌面 → 当前 App → 关闭。
+enum WindowPickerFlow {
+    /// true=当前 App，false=全局，nil=关闭。
+    static func nextAfterMenu(currentAppOnly: Bool) -> Bool? {
+        currentAppOnly ? nil : true
+    }
 }
 
 // MARK: - 浮层中心
@@ -154,7 +162,7 @@ final class OverlayCenter {
     // 窗口选择器状态
     private var pickerEntries: [WindowSwitcher.PickerEntry] = []
     private var pickerIndex = 0
-    private var pickerCurrentAppOnly = true
+    private var pickerCurrentAppOnly = false
     // 系统功能菜单状态
     private var menuIndex = 0
     // App 轮盘状态（停留式，DESIGN §3.1b：TV 长按弹出后松手停留，3s 无操作自动关）
@@ -206,7 +214,7 @@ final class OverlayCenter {
         active = kind
         switch kind {
         case .windowPicker:
-            pickerCurrentAppOnly = true
+            pickerCurrentAppOnly = false
             reloadPickerEntries()
             showPanel()
         case .systemMenu:
@@ -348,8 +356,18 @@ final class OverlayCenter {
         case .right:
             pickerStep(1)
             startRepeat(key) { [weak self] in self?.pickerStep(1) }
-        case .menu, .up, .down:
-            // 再按菜单键（或上下）= 范围切换：当前 App ↔ 所有 App
+        case .menu:
+            // 菜单键固定三段：第一下已打开“全局跨桌面”；
+            // 第二下切“当前 App”；第三下关闭。
+            guard let next = WindowPickerFlow.nextAfterMenu(currentAppOnly: pickerCurrentAppOnly) else {
+                close()
+                return
+            }
+            pickerCurrentAppOnly = next
+            reloadPickerEntries()
+            sync()
+        case .up, .down:
+            // 上下保留为快速往返查看两个范围，不影响菜单键三段语义。
             pickerCurrentAppOnly.toggle()
             reloadPickerEntries()
             sync()
@@ -654,7 +672,7 @@ enum HintBarCatalog {
         switch kind {
         case .windowPicker:
             return [Hint(keys: [.left, .right], text: "选窗（按住加速）"),
-                    Hint(keys: [.menu], text: "切范围"),
+                    Hint(keys: [.menu], text: "全局 → 当前 → 关闭"),
                     Hint(keys: [.ok], text: "前往"),
                     Hint(keys: [.back], text: "关闭")]
         case .systemMenu:
@@ -788,7 +806,8 @@ private struct WindowPickerView: View {
         VStack(spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "macwindow.on.rectangle")
-                Text(currentAppOnly ? "窗口 · \(frontAppName ?? "当前 App")" : "窗口 · 所有 App")
+                Text(currentAppOnly ? "窗口 · \(frontAppName ?? "当前 App")"
+                                    : "窗口 · 所有 App · 全部桌面")
                     .font(.headline)
                 Spacer()
             }
