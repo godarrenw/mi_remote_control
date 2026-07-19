@@ -6,17 +6,16 @@ import IOKit.hid
 /// 通过 `IOHIDManager` 匹配小米遥控器（VID 0x2717 / PID 0x32B8），把键盘页
 /// (usagePage 0x07) 的原始按键翻译成 `RemoteKey`，经 `HIDEngineDelegate` 上报。
 ///
-/// 打开策略：优先 `kIOHIDOptionsTypeSeizeDevice` 独占——系统收不到原始按键，
-/// 杜绝「遥控器按一下、既走我们的映射又触发系统默认」的双触发。独占失败则降级
-/// 为 `kIOHIDOptionsTypeNone` 监听模式：仍能读到按键，但**系统同样会处理它们**。
-///
-/// ponytail(M2): 监听模式下要真正抑制系统默认行为需要 CGEventTap 把遥控器事件吞掉
-/// （用 eventSourceUserData 魔数标记自己合成的事件避免误吞，见 DESIGN §3.5）。
-/// M2 先不做——降级路径只保证能读到键，抑制留给后续里程碑。
+/// 打开策略：直接 `kIOHIDOptionsTypeNone` 监听模式。
+/// 实机已证实 macOS 禁止用户态 seize 蓝牙键盘（0xE00002C1）；且对同一
+/// IOHIDManager「seize 失败 → Close → 重开」后，重开虽返回 success，
+/// 已枚举设备却不会真正重新打开——InputValue 回调永远收不到事件
+/// （即交接文档记录的 back 键 0xF1 事件数=0 的根因）。
+/// 系统默认行为的抑制由 hidutil 中转 + CGEventTap 负责（见 KeyRemapper）。
 ///
 /// `@unchecked Sendable`: IOHIDManager 的回调在我们调度的 runloop 线程上执行
-/// （这里是主 runloop），实例被以 opaque 指针形式传进 C 回调。可变状态仅有
-/// `seized`，且只在该 runloop 线程读写，故无需额外同步；delegate 为 weak 只读。
+/// （这里是主 runloop），实例被以 opaque 指针形式传进 C 回调，无可变状态；
+/// delegate 为 weak 只读。
 final class HIDEngine: @unchecked Sendable {
 
     private static let vendorID: Int  = 0x2717
@@ -27,8 +26,6 @@ final class HIDEngine: @unchecked Sendable {
 
     private weak var delegate: HIDEngineDelegate?
     private var manager: IOHIDManager?
-    /// 当前是否处于独占（seize）模式。仅在 runloop 回调线程访问。
-    private var seized = false
 
     init(delegate: HIDEngineDelegate?) {
         self.delegate = delegate
@@ -56,7 +53,14 @@ final class HIDEngine: @unchecked Sendable {
 
         IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
 
-        openManager(mgr)
+        // 只走监听模式，绝不 seize——失败后 Close 重开会让 manager 收不到任何事件。
+        let ret = IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
+        if ret == kIOReturnSuccess {
+            delegate?.hidLog("HID: 监听模式已打开")
+        } else {
+            delegate?.hidLog(String(format: "HID: 打开失败 0x%08X（需要输入监控权限？）", ret))
+        }
+        delegate?.hidSeizeState(false)
     }
 
     func stop() {
@@ -64,31 +68,6 @@ final class HIDEngine: @unchecked Sendable {
         IOHIDManagerUnscheduleFromRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDManagerClose(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
         manager = nil
-        seized = false
-    }
-
-    // MARK: - 打开 / 降级
-
-    /// 先试独占，失败降级监听。热插拔时 manager 会用同样的 option 自动打开新设备。
-    private func openManager(_ mgr: IOHIDManager) {
-        let seizeResult = IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
-        if seizeResult == kIOReturnSuccess {
-            seized = true
-            delegate?.hidLog("HID: 已独占打开设备 (seize)")
-            delegate?.hidSeizeState(true)
-            return
-        }
-
-        // 独占失败：清掉半开状态后以监听模式重开。
-        IOHIDManagerClose(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
-        let listenResult = IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
-        seized = false
-        if listenResult == kIOReturnSuccess {
-            delegate?.hidLog(String(format: "HID: 独占失败(0x%08X)，降级为监听模式（系统仍会处理按键）", seizeResult))
-        } else {
-            delegate?.hidLog(String(format: "HID: 打开失败 seize=0x%08X listen=0x%08X", seizeResult, listenResult))
-        }
-        delegate?.hidSeizeState(false)
     }
 
     // MARK: - 事件处理（回调线程）
@@ -115,14 +94,6 @@ final class HIDEngine: @unchecked Sendable {
 
     private func handleDeviceMatched(_ device: IOHIDDevice) {
         delegate?.hidLog("HID: 设备接入")
-        // 若当前处于降级监听模式，插入是重新争取独占的机会：单独对该设备尝试 seize。
-        guard !seized else { return }
-        let r = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
-        if r == kIOReturnSuccess {
-            seized = true
-            delegate?.hidLog("HID: 热插拔后升级为独占 (seize)")
-            delegate?.hidSeizeState(true)
-        }
     }
 
     private func handleDeviceRemoved(_ device: IOHIDDevice) {
