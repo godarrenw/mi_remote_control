@@ -175,6 +175,8 @@ Sources/MiRemote/
 
 实现映射：App 控制模式=层机制+per-app 层绑定+HUD；浮层需要「UI 模态路由」——浮层打开时 MappingEngine 把遥控键喂给浮层而非动作（新增 uiCapture 路由态）。新增 system 动作：show_desktop。
 
+**手柄/主机范式采纳（2026-07-19，源 scratchpad/gamepad-ux.md）**：①**按键提示条 HintBar**——模式/浮层激活时屏底半透明小条实时显示每键当前含义（比教程浮层更好的可发现性，PS5 glyph bar 范式）；②**长按语义铁律**——任何键的长按=「当前对象的更多/展开」，用户可预测；③**TV 双击=切回上一个 App**（MRU，PS4 双击 PS 键范式，高频来回切两 App 的零层级快捷）；④轮盘中心=取消待定态（Steam radial 规范，扇区≤8）；⑤hold-to-confirm 填充圈（熄屏/锁屏/退出等危险操作）；⑥列表导航按住加速（浮层内方向键长按加速滚动）；⑦前台 App 切换致 profile 变化时闪现角标「现在是微信布局」+可选音效（Steam Deck 层切换无提示是公认短板）。焦点视觉=tvOS 范式：放大 1.06-1.08+抬升阴影+0.22s spring，非选中降透明度。
+
 ### 3.2 动作类型清单（ActionRef）
 
 ```
