@@ -62,14 +62,25 @@ struct OnboardingWizard: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            // 步骤指示器
-            HStack(spacing: 8) {
-                ForEach(0..<3, id: \.self) { i in
-                    Circle()
-                        .fill(i == step ? Color.accentColor : Color.secondary.opacity(0.3))
-                        .frame(width: 8, height: 8)
-                    if i < 2 { Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 32, height: 1) }
+            HStack {
+                Spacer()
+                // 步骤指示器
+                HStack(spacing: 8) {
+                    ForEach(0..<3, id: \.self) { i in
+                        Circle()
+                            .fill(i == step ? Color.accentColor : Color.secondary.opacity(0.3))
+                            .frame(width: 8, height: 8)
+                        if i < 2 { Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 32, height: 1) }
+                    }
                 }
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("稍后设置；下次启动仍会显示向导")
             }
             .padding(.top, 4)
 
@@ -132,7 +143,7 @@ struct OnboardingWizard: View {
                                state: ax) {
                 if let url = EnvironmentCheck.accessibility().guideURL { NSWorkspace.shared.open(url) }
             }
-            Text("提示：如果这是别人分享给你的版本，每次更新后可能需要重新授权一次（约 30 秒），属正常安全机制。")
+            Text("提示：正式签名版正常更新会保留授权；测试版或签名身份变化时可能需要重新授权。")
                 .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
         }
     }

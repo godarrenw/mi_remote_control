@@ -20,6 +20,7 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
+        configureMainMenu()
 
         var opts = AppServices.Options()
         opts.keys = true
@@ -47,6 +48,52 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         showWindow()
+    }
+
+    /// 纯代码创建 NSApplication 时系统不会自动生成主菜单；显式补齐标准快捷键，
+    /// 否则菜单栏里的 App 菜单为空，⌘Q/⌘H/⌘W 都不会生效。
+    private func configureMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appRoot = NSMenuItem()
+        let appMenu = NSMenu(title: "MiRemote")
+        let about = NSMenuItem(title: "关于 MiRemote",
+                               action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                               keyEquivalent: "")
+        about.target = NSApp
+        appMenu.addItem(about)
+        appMenu.addItem(.separator())
+
+        let hide = NSMenuItem(title: "隐藏 MiRemote",
+                              action: #selector(NSApplication.hide(_:)),
+                              keyEquivalent: "h")
+        hide.target = NSApp
+        appMenu.addItem(hide)
+        appMenu.addItem(.separator())
+
+        let quit = NSMenuItem(title: "退出 MiRemote",
+                              action: #selector(NSApplication.terminate(_:)),
+                              keyEquivalent: "q")
+        quit.target = NSApp
+        appMenu.addItem(quit)
+        appRoot.submenu = appMenu
+        mainMenu.addItem(appRoot)
+
+        let windowRoot = NSMenuItem()
+        let windowMenu = NSMenu(title: "窗口")
+        let close = NSMenuItem(title: "关闭窗口",
+                               action: #selector(NSWindow.performClose(_:)),
+                               keyEquivalent: "w")
+        windowMenu.addItem(close)
+        let minimize = NSMenuItem(title: "最小化",
+                                  action: #selector(NSWindow.performMiniaturize(_:)),
+                                  keyEquivalent: "m")
+        windowMenu.addItem(minimize)
+        windowRoot.submenu = windowMenu
+        mainMenu.addItem(windowRoot)
+        NSApp.windowsMenu = windowMenu
+
+        NSApp.mainMenu = mainMenu
     }
 
     func applicationWillTerminate(_ notification: Notification) {
