@@ -200,7 +200,7 @@ struct VoiceTriggerRule: Codable, Equatable {
 }
 
 struct MappingConfig: Codable {
-    static let currentVersion = 5   // v5 = Home 双击调度中心 + 菜单键退出调度中心
+    static let currentVersion = 6   // v6 = 支持 App 默认不再覆盖 Home/菜单基础语义
     struct Settings: Codable {
         var holdMs: Int = 350
         /// 双击判定窗口。默认配置存在双击绑定（如 Zoom 预设 TV 双击=摄像头），故必须 >0；

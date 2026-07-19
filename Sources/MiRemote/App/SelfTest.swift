@@ -837,6 +837,20 @@ enum SelfTest {
                 }
                 expect(combo == nil, "默认配置零同按组合（无手势/无瞬时层入口）", combo ?? "")
             }
+            let baseNavigationOverride = cfg.profiles.first { profile, keys in
+                guard profile != "global" else { return false }
+                return ["home", "menu"].contains { key in
+                    guard let b = keys[key] else { return false }
+                    return b.tap != nil || b.hold != nil || b.double != nil
+                }
+            }
+            expect(baseNavigationOverride == nil,
+                   "支持 App 默认不覆盖 Home/菜单基础语义",
+                   baseNavigationOverride?.key ?? "")
+            expect(cfg.profiles["com.openai.codex"]?["home"]?.layers?["2"] == .focusInput
+                   && cfg.profiles["com.colliderli.iina"]?["menu"]?.layers?["2"]
+                        == .keyStroke(key: "s", mods: ["left_ctrl", "left_shift"]),
+                   "App 专属 Home/菜单动作改放控制模式")
             expect(g?["volUp"]?.tap == .system("volume_up")
                    && g?["volDown"]?.tap == .system("volume_down"),
                    "默认配置 v2：音量±=系统音量")
@@ -895,15 +909,54 @@ enum SelfTest {
                    "v3→v4 per-app 旧 TV 接线清除")
         }
 
-        // v2-7. 预设不再劫持 v2 系统导航键的 base 槽位（菜单 tap / TV tap/double）。
+        // v2-7. v5→v6：只清理内置支持 App 的 Home/菜单基础槽，并搬入层2。
+        do {
+            var old = MappingConfig()
+            old.version = 5
+            old.profiles["global"] = defaultConfig().profiles["global"]
+            old.profiles["com.openai.codex"] = [
+                "home": KeyBinding(tap: .focusInput),
+                "menu": KeyBinding(tap: .layerToggle(3)),
+            ]
+            old.profiles["com.colliderli.iina"] = [
+                "menu": KeyBinding(tap: .layerToggle(3),
+                                   hold: .keyStroke(key: "s", mods: ["left_ctrl", "left_shift"])),
+            ]
+            old.profiles["com.example.custom"] = [
+                "home": KeyBinding(tap: .system("spotlight")),
+            ]
+            let cfg = migrateConfigIfNeeded(old)
+            expect(cfg.version == MappingConfig.currentVersion
+                   && cfg.profiles["com.openai.codex"]?["home"]?.tap == nil
+                   && cfg.profiles["com.openai.codex"]?["home"]?.layers?["2"] == .focusInput
+                   && cfg.profiles["com.openai.codex"]?["menu"]?.tap == nil,
+                   "v5→v6 支持 App 基础导航槽统一")
+            expect(cfg.profiles["com.colliderli.iina"]?["menu"]?.hold == nil
+                   && cfg.profiles["com.colliderli.iina"]?["menu"]?.layers?["2"]
+                        == .keyStroke(key: "s", mods: ["left_ctrl", "left_shift"]),
+                   "v5→v6 媒体菜单动作搬入层2")
+            expect(cfg.profiles["com.example.custom"]?["home"]?.tap == .system("spotlight"),
+                   "v5→v6 用户自建 Profile 不改写")
+        }
+
+        // v2-8. 预设不再劫持 v2 系统导航键的 base 槽位。
         do {
             var bad: String? = nil
-            for p in [Presets.coreGestures, Presets.aiApprovalLayer, Presets.multiAgentBindings]
-                    + Presets.workPresets {
+            for p in Presets.all {
+                if p.bindings["home"]?.tap != nil || p.bindings["home"]?.hold != nil
+                    || p.bindings["home"]?.double != nil { bad = "\(p.id).home.base"; break }
                 if p.bindings["menu"]?.tap != nil { bad = "\(p.id).menu.tap"; break }
-                if p.bindings["tv"]?.tap != nil { bad = "\(p.id).tv.tap"; break }
-                if p.bindings["tv"]?.double != nil { bad = "\(p.id).tv.double"; break }
-                if p.bindings["tv"]?.layers?["2"] != nil { bad = "\(p.id).tv.layers[2]"; break }
+                if p.bindings["menu"]?.hold != nil || p.bindings["menu"]?.double != nil {
+                    bad = "\(p.id).menu.base"; break
+                }
+            }
+            if bad == nil {
+                for p in [Presets.coreGestures, Presets.aiApprovalLayer, Presets.multiAgentBindings]
+                        + Presets.workPresets {
+                    if p.bindings["tv"]?.tap != nil { bad = "\(p.id).tv.tap"; break }
+                    if p.bindings["tv"]?.double != nil { bad = "\(p.id).tv.double"; break }
+                    if p.bindings["tv"]?.layers?["2"] != nil { bad = "\(p.id).tv.layers[2]"; break }
+                }
             }
             expect(bad == nil, "预设不占用 v2 导航键 base 槽位", bad ?? "")
         }

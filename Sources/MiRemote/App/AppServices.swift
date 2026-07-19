@@ -109,6 +109,38 @@ func migrateConfigIfNeeded(_ input: MappingConfig) -> MappingConfig {
         cfg.profiles["global"] = g
         cfg.version = 5
     }
+    if cfg.version < 6 {
+        // 支持 App 的预设曾把 Home/菜单基础槽改成聚焦、地址栏、字幕等语义，
+        // 造成同一实体键随 App 变义。将有用的 App 专属动作搬到 TV 控制模式（层2），
+        // 基础态回归 global；只处理内置支持 App，不动用户自建 Profile。
+        let supported = Set(Presets.all.compactMap(\.bundleID))
+        for profileName in supported {
+            guard var profile = cfg.profiles[profileName] else { continue }
+            for key in ["home", "menu"] {
+                guard var binding = profile[key] else { continue }
+                var layers = binding.layers ?? [:]
+                if layers["2"] == nil {
+                    if key == "home", let tap = binding.tap {
+                        layers["2"] = tap
+                    } else if key == "menu" {
+                        // 旧媒体/演示预设的真正功能放在 hold；tap=导航层开关丢弃。
+                        if let hold = binding.hold {
+                            layers["2"] = hold
+                        } else if let tap = binding.tap, tap != .layerToggle(3) {
+                            layers["2"] = tap
+                        }
+                    }
+                }
+                binding.tap = nil
+                binding.hold = nil
+                binding.double = nil
+                binding.layers = layers.isEmpty ? nil : layers
+                profile[key] = binding
+            }
+            cfg.profiles[profileName] = profile
+        }
+        cfg.version = 6
+    }
     return cfg
 }
 

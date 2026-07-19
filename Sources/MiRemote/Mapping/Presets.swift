@@ -151,7 +151,7 @@ enum Presets {
             "ok": KeyBinding(tap: ks("return"), hold: ks("c", ["left_ctrl"]),
                              layers: ["1": ks("return", ["left_cmd", "left_shift"])]),
             "back": KeyBinding(tap: ks("escape"), hold: ks("u", ["left_ctrl"])),
-            "home": KeyBinding(tap: .focusInput),
+            "home": KeyBinding(layers: ["2": .focusInput]),
             // TV hold 不再占用：全局 TV 长按 = App 轮盘（零同按原则下的停留式切 App）。
         ]
     )
@@ -172,14 +172,14 @@ enum Presets {
             "back": KeyBinding(tap: ks("escape"),
                                layers: ["2": ks("period", ["left_cmd"])]),   // Cmd+. 停止生成
             "menu": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),        // Cmd+K 搜索/历史
-            "home": KeyBinding(tap: .focusInput),
+            "home": KeyBinding(layers: ["2": .focusInput]),
         ]
     )
 
     static let codexDesktop = Preset(
         id: "ai_codex_desktop",
         displayName: "Codex 桌面版",
-        note: "上下选择，左右切任务标签，OK=确认，返回=Esc，主页键聚焦输入框；TV 单击进 App 控制模式。",
+        note: "上下选择，左右切任务标签，OK=确认，返回=Esc；控制模式内 Home 聚焦输入框。",
         bundleID: "com.openai.codex",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
@@ -188,14 +188,14 @@ enum Presets {
             "down": KeyBinding(tap: ks("down_arrow")),
             "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("escape")),
-            "home": KeyBinding(tap: .focusInput),
+            "home": KeyBinding(layers: ["2": .focusInput]),
         ]
     )
 
     static let chrome = Preset(
         id: "browser_chrome",
         displayName: "Google Chrome",
-        note: "左右切标签，上下翻页，OK=确认，返回=浏览器后退，主页键=地址栏；控制模式内菜单=Cmd+K（网页版 AI 搜索/历史）。",
+        note: "左右切标签，上下翻页，OK=确认，返回=浏览器后退；控制模式内 Home=地址栏、菜单=Cmd+K。",
         bundleID: "com.google.Chrome",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
@@ -204,7 +204,7 @@ enum Presets {
             "down": KeyBinding(tap: ks("page_down")),
             "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("left_bracket", ["left_cmd"])),
-            "home": KeyBinding(tap: ks("l", ["left_cmd"])),
+            "home": KeyBinding(layers: ["2": ks("l", ["left_cmd"])]),
             // 控制模式内菜单 = Cmd+K（claude.ai / chatgpt.com 网页版搜索/历史，vibe 调研 §5.2）
             "menu": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),
         ]
@@ -213,7 +213,7 @@ enum Presets {
     static let claudeDesktop = Preset(
         id: "ai_claude_desktop",
         displayName: "Claude 桌面版",
-        note: "上下选择，左右切标签，OK=确认，返回=Esc，主页键聚焦输入框；TV 单击进 App 控制模式。",
+        note: "上下选择，左右切标签，OK=确认，返回=Esc；控制模式内 Home 聚焦输入框。",
         bundleID: "com.anthropic.claudefordesktop",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
@@ -222,14 +222,14 @@ enum Presets {
             "down": KeyBinding(tap: ks("down_arrow")),
             "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("escape")),
-            "home": KeyBinding(tap: .focusInput),
+            "home": KeyBinding(layers: ["2": .focusInput]),
         ]
     )
 
     static let safari = Preset(
         id: "browser_safari",
         displayName: "Safari",
-        note: "左右切标签，上下翻页，OK=确认，返回=后退，主页键=地址栏；控制模式内菜单=Cmd+K（网页版 AI 搜索/历史）。",
+        note: "左右切标签，上下翻页，OK=确认，返回=后退；控制模式内 Home=地址栏、菜单=Cmd+K。",
         bundleID: "com.apple.Safari",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
@@ -238,7 +238,7 @@ enum Presets {
             "down": KeyBinding(tap: ks("page_down")),
             "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("left_bracket", ["left_cmd"])),
-            "home": KeyBinding(tap: ks("l", ["left_cmd"])),
+            "home": KeyBinding(layers: ["2": ks("l", ["left_cmd"])]),
             // 控制模式内菜单 = Cmd+K（网页版 AI 搜索/历史，vibe 调研 §5.2）
             "menu": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),
         ]
@@ -251,7 +251,7 @@ enum Presets {
         id: "chat_wechat",
         displayName: "微信",
         note: """
-        上下浏览会话/消息，OK=发送，返回=Esc，主页键=搜索；控制模式内 下=Cmd+G 下一个未读会话、\
+        上下浏览会话/消息，OK=发送，返回=Esc；控制模式内 Home=搜索、下=Cmd+G 下一个未读会话、\
         菜单=切到文件传输助手（宏：搜索→键入→回车，【待实测】）。\
         上一个会话/引用回复等无原生快捷键，待 AX 实现后补。
         """,
@@ -264,7 +264,7 @@ enum Presets {
             "right": KeyBinding(tap: ks("page_down")),
             "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("escape")),
-            "home": KeyBinding(tap: ks("f", ["left_cmd"])),
+            "home": KeyBinding(layers: ["2": ks("f", ["left_cmd"])]),
             // 控制模式内菜单 = 切文件传输助手（Vibe 高频「甩给自己」，微信无原生键）。
             // 宏路径【待实测】：搜索框快捷键与聚焦时序需实机确认。
             "menu": KeyBinding(layers: ["2": fileTransferMacro]),
@@ -298,7 +298,7 @@ enum Presets {
             "left": KeyBinding(tap: ks("left_arrow")),
             "right":KeyBinding(tap: ks("right_arrow")),
             "up":   KeyBinding(tap: ks("f")),
-            "menu": KeyBinding(tap: .layerToggle(3), hold: ks("s", ["left_ctrl", "left_shift"])),
+            "menu": KeyBinding(layers: ["2": ks("s", ["left_ctrl", "left_shift"])]),
         ]
     )
 
@@ -313,7 +313,7 @@ enum Presets {
             "left": KeyBinding(tap: ks("left_arrow", ["left_cmd", "left_option"])),
             "right":KeyBinding(tap: ks("right_arrow", ["left_cmd", "left_option"])),
             "up":   KeyBinding(tap: ks("f", ["left_cmd"])),
-            "menu": KeyBinding(tap: .layerToggle(3), hold: ks("s")),
+            "menu": KeyBinding(layers: ["2": ks("s")]),
         ]
     )
 
@@ -327,7 +327,7 @@ enum Presets {
             "left": KeyBinding(tap: ks("left_arrow")),
             "right":KeyBinding(tap: ks("right_arrow")),
             "ok":   KeyBinding(tap: ks("p", ["left_cmd", "left_option"])),
-            "menu": KeyBinding(tap: .layerToggle(3), hold: ks("b")),
+            "menu": KeyBinding(layers: ["2": ks("b")]),
         ]
     )
 
@@ -341,7 +341,7 @@ enum Presets {
             "left": KeyBinding(tap: ks("left_arrow")),
             "right":KeyBinding(tap: ks("right_arrow")),
             "ok":   KeyBinding(tap: ks("f5")),
-            "menu": KeyBinding(tap: .layerToggle(3), hold: ks("b")),
+            "menu": KeyBinding(layers: ["2": ks("b")]),
         ]
     )
 
