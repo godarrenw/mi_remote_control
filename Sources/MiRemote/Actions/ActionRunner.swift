@@ -186,15 +186,32 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
         }
     }
 
-    // MARK: - shell（后台跑，不阻塞；10s 超时 kill）
+    // MARK: - shell（独立进程组后台跑，不阻塞；10s 超时 SIGTERM 整组，2s 宽限后 SIGKILL 整组）
+    // Foundation Process 不暴露 setpgroup，改用 posix_spawn：zsh 自成进程组，
+    // 超时 kill(-pgid) 连同它派生的子进程/后台进程一起清掉（原实现只 terminate zsh 父进程）。
     private func shell(_ cmd: String) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-c", cmd]
-        do { try p.run() } catch { log("shell launch failed: \(error)"); return }
-        // ponytail: 用后台 DispatchQueue 看门狗超时 kill，够用；不引 timeout(1) 依赖。
-        DispatchQueue.global().asyncAfter(deadline: .now() + 10) { [weak p] in
-            if let p = p, p.isRunning { p.terminate() }
+        var attr: posix_spawnattr_t?
+        posix_spawnattr_init(&attr)
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setpgroup(&attr, 0)   // pgid = 子进程自身 pid
+        var pid: pid_t = 0
+        let words: [String] = ["/bin/zsh", "-c", cmd]
+        var argv: [UnsafeMutablePointer<CChar>?] = words.map { strdup($0) }
+        argv.append(nil)
+        let rc = posix_spawn(&pid, "/bin/zsh", nil, &attr, argv, environ)
+        posix_spawnattr_destroy(&attr)
+        argv.forEach { free($0) }
+        guard rc == 0 else { log("shell spawn failed rc=\(rc)"); return }
+        let group = pid
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+            // 进程组仍存活才发信号（组完全退出后 kill 返回 ESRCH，无害但省掉误杀窗口）。
+            guard kill(-group, 0) == 0 else { return }
+            kill(-group, SIGTERM)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { kill(-group, SIGKILL) }
+        }
+        DispatchQueue.global().async {
+            var status: Int32 = 0
+            waitpid(pid, &status, 0)   // 回收 zsh，避免僵尸进程
         }
     }
 

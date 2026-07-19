@@ -309,6 +309,140 @@ enum SelfTest {
             expect(WindowSwitcher.pickGlobalTarget([wins[0]]) == nil, "单窗口不切换")
         }
 
+        // Presets-1. 所有预设的每个 KeyBinding 能被 JSONEncoder/Decoder 无损往返
+        do {
+            let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
+            let dec = JSONDecoder()
+            var bad: String? = nil
+            outer: for preset in Presets.all {
+                for (key, binding) in preset.bindings {
+                    let d1 = try enc.encode(binding)
+                    let d2 = try enc.encode(dec.decode(KeyBinding.self, from: d1))
+                    if d1 != d2 { bad = "\(preset.id).\(key)"; break outer }
+                }
+            }
+            expect(bad == nil, "预设 KeyBinding JSON 往返", bad ?? "")
+        } catch { expect(false, "预设 KeyBinding JSON 往返", "\(error)") }
+
+        // Presets-2. 预设内所有 key_stroke 的键名/修饰名都在 ActionRunner 表内（防拼错）
+        do {
+            func collectKeyStrokes(_ a: Action, into out: inout [(String, [String])]) {
+                switch a {
+                case .keyStroke(let k, let m): out.append((k, m))
+                case .macro(let steps):
+                    for s in steps { if case .action(let inner) = s { collectKeyStrokes(inner, into: &out) } }
+                default: break
+                }
+            }
+            var badName: String? = nil
+            outer: for preset in Presets.all {
+                for (key, binding) in preset.bindings {
+                    var strokes = [(String, [String])]()
+                    for act in Presets.actions(in: binding) { collectKeyStrokes(act, into: &strokes) }
+                    for (k, mods) in strokes {
+                        if ActionRunner.keyCodes[k.lowercased()] == nil {
+                            badName = "\(preset.id).\(key) 未知键名 '\(k)'"; break outer
+                        }
+                        for m in mods where ActionRunner.modifiers[m.lowercased()] == nil {
+                            badName = "\(preset.id).\(key) 未知修饰 '\(m)'"; break outer
+                        }
+                    }
+                }
+            }
+            expect(badName == nil, "预设键名/修饰名全部有效", badName ?? "")
+        }
+
+        // Presets-3. apply 合并语义：空配置写入 / 不覆盖用户绑定 / force 覆盖 / 层槽合并
+        do {
+            // (a) 空配置：per-app 预设写进对应 bundle profile
+            var cfg = MappingConfig()
+            Presets.apply(Presets.iina, to: &cfg)
+            expect(cfg.profiles["com.colliderli.iina"]?["ok"]?.tap == .keyStroke(key: "space", mods: []),
+                   "apply 空配置写入 per-app")
+
+            // (b) 不覆盖用户已设的同一槽位，但补齐用户未设的槽
+            var cfg2 = MappingConfig()
+            cfg2.profiles["com.colliderli.iina"] = ["ok": KeyBinding(tap: .system("mute"))]
+            Presets.apply(Presets.iina, to: &cfg2)   // 预设 ok.tap=space，与用户冲突
+            expect(cfg2.profiles["com.colliderli.iina"]?["ok"]?.tap == .system("mute"),
+                   "apply 不覆盖用户已有槽位")
+            expect(cfg2.profiles["com.colliderli.iina"]?["up"]?.tap == .keyStroke(key: "f", mods: []),
+                   "apply 仍补齐用户未设的键")
+
+            // (c) force=true 覆盖用户绑定
+            var cfg3 = MappingConfig()
+            cfg3.profiles["com.colliderli.iina"] = ["ok": KeyBinding(tap: .system("mute"))]
+            Presets.apply(Presets.iina, to: &cfg3, force: true)
+            expect(cfg3.profiles["com.colliderli.iina"]?["ok"]?.tap == .keyStroke(key: "space", mods: []),
+                   "apply force 覆盖用户绑定")
+
+            // (d) 层绑定类并入 global 的 layers["2"]，不动用户已有 base tap
+            var cfg4 = MappingConfig()
+            cfg4.profiles["global"] = ["ok": KeyBinding(tap: .keyStroke(key: "return", mods: []))]
+            Presets.apply(Presets.aiApprovalLayer, to: &cfg4)
+            expect(cfg4.profiles["global"]?["ok"]?.tap == .keyStroke(key: "return", mods: []),
+                   "层预设保留 base tap")
+            expect(cfg4.profiles["global"]?["ok"]?.layers?["2"] == .keyStroke(key: "return", mods: []),
+                   "层预设写入 layers[2]")
+            expect(cfg4.profiles["global"]?["menu"]?.layers?["2"] == .keyStroke(key: "tab", mods: ["left_shift"]),
+                   "层预设 Shift+Tab 切自动模式")
+
+            // (e) 两个层预设叠加，各自的 layer[2] 键互不覆盖
+            Presets.apply(Presets.multiAgentBindings, to: &cfg4)
+            expect(cfg4.profiles["global"]?["left"]?.layers?["2"] == .tabJump(dir: -1, index: nil)
+                   && cfg4.profiles["global"]?["right"]?.layers?["2"] == .tabJump(dir: 1, index: nil),
+                   "多 agent 层预设叠加到 layer[2]")
+        }
+
+        // 加固-1. Action 严格解码：未知 type 抛错（拼写错误不再伪装成 .none），显式 none 正常。
+        do {
+            let d = JSONDecoder()
+            expect((try? d.decode(Action.self, from: Data(#"{"type":"warp_drive"}"#.utf8))) == nil,
+                   "Action 未知 type 抛解码错误")
+            expect((try? d.decode(Action.self, from: Data(#"{"type":"none"}"#.utf8))) == Action.none,
+                   "Action 显式 none 正常解码")
+            expect((try? d.decode(MacroStep.self, from: Data(#"{"type":"warp_drive"}"#.utf8))) == nil,
+                   "MacroStep 未知 type 抛解码错误")
+            expect((try? d.decode(MappingConfig.self, from: Data(
+                #"{"version":1,"settings":{"holdMs":350,"doubleMs":0},"profiles":{"global":{"ok":{"tap":{"type":"tpyo"}}}}}"#.utf8))) == nil,
+                   "含未知动作的整份配置解码失败（触发 main 回退默认配置）")
+        }
+
+        // 加固-2. hidutil UserKeyMapping 输出解析（install 保存前值 / uninstall 恢复用）
+        do {
+            expect(KeyRemapper.parseUserKeyMapping("")?.isEmpty == true, "空输出 → 空映射")
+            expect(KeyRemapper.parseUserKeyMapping("RegistryID  Key  Value\n100001209 UserKeyMapping (null)\n")?.isEmpty == true,
+                   "(null) → 空映射")
+            expect(KeyRemapper.parseUserKeyMapping("100001209 UserKeyMapping (\n)\n")?.isEmpty == true,
+                   "空数组 → 空映射")
+            // 实机 --get 输出原样（含表头、缩进）
+            let sample = """
+            RegistryID  Key                   Value
+            100001209   UserKeyMapping   (
+                    {
+                    HIDKeyboardModifierMappingDst = 30064771177;
+                    HIDKeyboardModifierMappingSrc = 30064771146;
+                },
+                    {
+                    HIDKeyboardModifierMappingDst = 30064771178;
+                    HIDKeyboardModifierMappingSrc = 30064771173;
+                }
+            )
+            """
+            let pairs = KeyRemapper.parseUserKeyMapping(sample)
+            expect(pairs?.count == 2
+                   && pairs?[0].src == 30064771146 && pairs?[0].dst == 30064771177
+                   && pairs?[1].src == 30064771173 && pairs?[1].dst == 30064771178,
+                   "plist 风格条目解析", "\(String(describing: pairs))")
+            expect(KeyRemapper.parseUserKeyMapping("hidutil: unexpected error") == nil,
+                   "无法识别输出 → nil（解析失败，按空映射恢复并记日志）")
+            expect(KeyRemapper.parseUserKeyMapping("( { HIDKeyboardModifierMappingSrc = 1; } )") == nil,
+                   "条目缺 Dst → nil（解析失败）")
+        }
+
+        // 加固-3. resetInputState：清瞬时层/OK 物理态/在途定时器（设备移除/睡眠/tap 失效恢复路径）
+        expect(MappingEngine.resetSelfCheck(), "MappingEngine resetInputState 自测")
+
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")
         return failures == 0 ? 0 : 1
     }

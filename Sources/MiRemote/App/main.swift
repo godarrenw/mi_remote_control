@@ -199,10 +199,31 @@ func loadOrCreateConfig() -> MappingConfig {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("config.json")
     }
-    if let data = try? Data(contentsOf: url), let cfg = try? JSONDecoder().decode(MappingConfig.self, from: data) {
-        log("配置已加载: \(url.path)")
-        return cfg
+    let fileExists = FileManager.default.fileExists(atPath: url.path)
+    if fileExists, let data = try? Data(contentsOf: url) {
+        do {
+            let cfg = try JSONDecoder().decode(MappingConfig.self, from: data)
+            log("配置已加载: \(url.path)")
+            return cfg
+        } catch {
+            // Action 严格解码：未知 type/缺字段会走到这里。明确告知回退，绝不静默。
+            log("配置解析失败，使用默认配置（原文件保留未动）: \(error)")
+            return defaultConfig()   // 不覆盖用户的问题文件，便于修复
+        }
     }
+    return writeDefaultConfig(to: url)
+}
+
+func writeDefaultConfig(to url: URL) -> MappingConfig {
+    let cfg = defaultConfig()
+    if let data = try? JSONEncoder().encode(cfg) {
+        try? data.write(to: url)
+        log("已生成默认配置: \(url.path)")
+    }
+    return cfg
+}
+
+func defaultConfig() -> MappingConfig {
     // 默认配置：方向=方向键（层1 示例：上下=音量），OK=回车/长按进层1/按住+方向=手势，
     // 返回=退格，菜单=调度中心，主页=启动台，TV=打开系统设置，电源=熄屏，音量=系统音量。
     // 语音键放行给 ATVV。
@@ -232,10 +253,6 @@ func loadOrCreateConfig() -> MappingConfig {
         "volDown": KeyBinding(tap: .system("volume_down")),
         "voice":   KeyBinding(tap: .voice),
     ]
-    if let data = try? JSONEncoder().encode(cfg) {
-        try? data.write(to: url)
-        log("已生成默认配置: \(url.path)")
-    }
     return cfg
 }
 
@@ -270,6 +287,22 @@ if keysFlag {
     tapEngine = tap
     hidFilter = filter
     hidEngine = hid
+    KeyRemapper.log = { log("HIDUTIL \($0)") }   // install/uninstall 失败可见，不静默
+    // 映射生命周期：蓝牙重连后设备服务重建，hidutil 映射可能失效 → 幂等重装；
+    // 设备移除 / 系统睡眠可能丢 keyUp → 复位引擎与 tap 的按压状态。
+    hid.onDeviceMatched = { tap.reinstallMapping(reason: "设备重连") }
+    hid.onDeviceRemoved = {
+        km.engine.resetInputState(reason: "设备移除")
+        tap.resetPressState()
+    }
+    let wsnc = NSWorkspace.shared.notificationCenter
+    wsnc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
+        tap.reinstallMapping(reason: "系统唤醒")
+    }
+    wsnc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in
+        km.engine.resetInputState(reason: "系统睡眠")
+        tap.resetPressState()
+    }
     tap.start()
     hid.start()
     log("按键映射已启用（hidutil 中转 + CGEventTap + IOHID 监听兜底）")

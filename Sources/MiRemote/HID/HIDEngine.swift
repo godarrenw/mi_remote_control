@@ -27,6 +27,11 @@ final class HIDEngine: @unchecked Sendable {
     private weak var delegate: HIDEngineDelegate?
     private var manager: IOHIDManager?
 
+    /// 设备接入/移除通知（main 接线：蓝牙重连后重装 hidutil 映射 / 移除后复位输入状态）。
+    /// 回调线程 = manager 调度的 runloop 线程。
+    var onDeviceMatched: (() -> Void)?
+    var onDeviceRemoved: (() -> Void)?
+
     init(delegate: HIDEngineDelegate?) {
         self.delegate = delegate
     }
@@ -94,10 +99,12 @@ final class HIDEngine: @unchecked Sendable {
 
     private func handleDeviceMatched(_ device: IOHIDDevice) {
         delegate?.hidLog("HID: 设备接入")
+        onDeviceMatched?()
     }
 
     private func handleDeviceRemoved(_ device: IOHIDDevice) {
         delegate?.hidLog("HID: 设备移除")
+        onDeviceRemoved?()
     }
 
     // MARK: - C 回调蹦床（无捕获，可转 @convention(c) 指针）

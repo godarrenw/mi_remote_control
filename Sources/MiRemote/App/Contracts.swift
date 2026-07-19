@@ -82,7 +82,12 @@ enum Action: Codable, Equatable {
         case "focus_input":  self = .focusInput
         case "mouse_mode":   self = .mouseMode
         case "macro":        self = .macro(steps: try c.decodeIfPresent([MacroStep].self, forKey: .steps) ?? [])
-        default:           self = .none
+        case "none":         self = .none
+        case let other:
+            // 严格解码：未知 type 抛错而非静默降级为 .none，拼写错误在加载配置时即暴露
+            //（main 的配置加载 catch 后回退默认配置并记日志）。
+            throw DecodingError.dataCorruptedError(
+                forKey: .type, in: c, debugDescription: "未知动作 type: \(other)")
         }
     }
     func encode(to e: Encoder) throws {

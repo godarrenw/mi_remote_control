@@ -8,6 +8,8 @@ struct TapRoute: Sendable {
     /// 生效层（0=基础层）。非 0 时方向键必须走引擎（层覆盖可能改语义）。
     var effectiveLayer: Int = 0
     /// ok 键是否物理按住（手势前置条件，按住期间方向键走引擎）。
+    /// 注意：TapEngine 分流时用自身在 tap 回调里同步锁存的 OK 物理态覆盖此字段
+    /// （本字段经引擎 queue 异步更新、可能滞后毫秒级），此处仅作兜底/调试参考。
     var okDown: Bool = false
     /// 「纯原生 tap」的方向键集合：tap=对应原生方向键 keyStroke 且无 hold/double。
     /// layers 允许存在——层激活与否由 effectiveLayer 单独把关。
@@ -91,10 +93,12 @@ final class MappingEngine: @unchecked Sendable {
 
     // MARK: - 分流快照（tap 回调线程读，引擎 queue 写）
 
-    /// 已知竞争窗口（接受）：ok 按下与方向键几乎同时到达时，方向键在 tap 回调里读到的
-    /// 快照可能还没来得及标记 okDown，导致这次手势漏判成普通方向键。窗口是
-    /// tap 回调 → 引擎 queue 异步投递的毫秒级延迟，用户几乎无法复现，不做同步等待
-    /// （tap 回调同步 dispatch 到引擎 queue 有死锁/输入延迟风险）。
+    /// okDown 竞争窗口（已消除）：ok 按下与方向键几乎同时到达时，本快照的 okDown
+    /// 可能尚未更新（tap 回调 → 引擎 queue 异步投递的毫秒级延迟）。TapEngine 已在
+    /// tap 回调里同步锁存 OK 物理态并在方向分流判定时覆盖快照的 okDown（OK 也是
+    /// 中转键，tap 回调能同步看到它），手势漏判窗口不复存在；快照 okDown 仅作兜底。
+    /// 层/纯原生的分流判定仍读本快照（毫秒级陈旧可接受）。不在 tap 回调里
+    /// 同步 dispatch 到引擎 queue（有死锁/输入延迟风险）。
     private let tapRouteLock = OSAllocatedUnfairLock(initialState: TapRoute())
 
     /// 供 TapEngine 在回调线程同步读取的分流快照。
@@ -174,6 +178,12 @@ final class MappingEngine: @unchecked Sendable {
         dispatch { [weak self] in self?._handle(event) }
     }
 
+    /// 复位全部输入运行态：作废在途定时器、清按键相位/瞬时层/OK 物理态，重发布快照。
+    /// 设备移除、系统睡眠、tap 失效恢复等可能丢 keyUp 的场景调用，防止卡键/卡层。
+    func resetInputState(reason: String) {
+        dispatch { [weak self] in self?._resetInputState(reason) }
+    }
+
     // MARK: - 对外 API 实现（均在执行上下文内）
 
     private func _setConfig(_ config: MappingConfig) {
@@ -199,6 +209,24 @@ final class MappingEngine: @unchecked Sendable {
             log("PROFILE global (bundle=\(bundleID ?? "nil"))")
         }
         publishTapRoute()
+    }
+
+    private func _resetInputState(_ reason: String) {
+        // 保留 states 条目、只 bump seq：直接清空会让新按压的 seq 从 0 重计，
+        // 可能与在途旧定时器的令牌撞值而误触发。
+        for (key, var st) in states {
+            st.seq &+= 1
+            st.phase = .idle
+            st.holdFired = false
+            st.suppressTap = false
+            states[key] = st
+        }
+        okPhysicallyDown = false
+        momentaryLayer = nil
+        momentaryOwner = nil
+        recomputeLayer()      // 若在瞬时层则通知回落（内部含快照发布）
+        publishTapRoute()     // 层未变化时 recomputeLayer 不发布，这里兜底刷新 okDown
+        log("RESET input state (\(reason))")
     }
 
     private func _handle(_ event: ButtonEvent) {
@@ -661,6 +689,49 @@ extension MappingEngine {
         expect(engine.tapRoute.nativeDirections == [.down, .left], "7 config reload drops up")
 
         if ok { print("[MappingEngine.tapRouteSelfCheck] all scenarios passed") }
+        return ok
+    }
+
+    /// resetInputState 加固自测：瞬时层回落、OK 物理态清除、在途定时器作废、孤儿 keyUp 无副作用。
+    static func resetSelfCheck() -> Bool {
+        var ok = true
+        func expect(_ cond: Bool, _ msg: String) {
+            if !cond { ok = false; print("[MappingEngine.resetSelfCheck] FAIL: \(msg)") }
+        }
+        let clock = ManualClock()
+        let runner = RecordingRunner()
+        let del = RecordingDelegate()
+        let engine = MappingEngine(config: makeTestConfig(),
+                                   runner: runner,
+                                   delegate: del,
+                                   dispatch: { $0() },
+                                   scheduleAfter: { ms, work in clock.schedule(ms, work) })
+        func down(_ k: RemoteKey) { engine.handle(ButtonEvent(key: k, isDown: true, timeNs: 0)) }
+        func up(_ k: RemoteKey)   { engine.handle(ButtonEvent(key: k, isDown: false, timeNs: 0)) }
+
+        // 1) ok 长按进瞬时层1 → reset（模拟睡眠）→ 层回落 0、okDown 清除、快照刷新。
+        down(.ok); clock.advance(100)
+        expect(engine.tapRoute.effectiveLayer == 1 && engine.tapRoute.okDown, "1 hold 后层1+okDown")
+        engine.resetInputState(reason: "test-sleep")
+        expect(engine.tapRoute.effectiveLayer == 0 && !engine.tapRoute.okDown, "1 reset 后层0+okDown清除")
+        expect(del.layers == [1, 0], "1 reset 通知层回落")
+        // 丢失的 keyUp 事后到达：无动作产出。
+        up(.ok); clock.advance(300)
+        expect(runner.actions.isEmpty, "1 reset 后孤儿 keyUp 无产出")
+
+        // 2) 在途 hold 定时器被作废：tv 按下 → reset → 时间推进不触发 layerToggle。
+        down(.tv)
+        engine.resetInputState(reason: "test-cancel-hold")
+        clock.advance(200)
+        expect(del.layers == [1, 0], "2 reset 作废在途 hold 定时器")
+        up(.tv); clock.advance(200)
+        expect(runner.actions.isEmpty && del.layers == [1, 0], "2 作废后 up 亦无产出")
+
+        // 3) reset 后正常按键流程不受影响。
+        down(.back); clock.advance(10); up(.back)
+        expect(runner.actions == [.keyStroke(key: "escape", mods: [])], "3 reset 后正常 tap")
+
+        if ok { print("[MappingEngine.resetSelfCheck] passed") }
         return ok
     }
 }
