@@ -86,17 +86,21 @@ struct RootView: View {
         .sheet(isPresented: $showHealthCheck) { HealthCheckSheet() }
         .sheet(isPresented: $showReauth) { ReauthSheet() }
         .onAppear {
+            let lostPermissions = PermissionMemory.lostPermissions()
             // 每次进程启动都按当前真实权限重检。完成过向导只代表用户走完流程，
             // 不能掩盖后来拒绝/撤销/签名变化导致的失权。
-            if PermissionGate.needsOnboarding(
+            // 已完成过首启但 AX/输入监控失权时优先走精简重授权，不重复 BlackHole/配对。
+            if PermissionGate.shouldUseReauth(
+                hasCompletedOnboarding: model.hasCompletedOnboarding,
+                bluetooth: CBCentralManager.authorization,
+                lostCorePermissions: lostPermissions) {
+                showReauth = true
+            } else if PermissionGate.needsOnboarding(
                 hasCompletedOnboarding: model.hasCompletedOnboarding,
                 bluetooth: CBCentralManager.authorization,
                 accessibility: EnvironmentCheck.accessibility().state,
                 inputMonitoring: EnvironmentCheck.inputMonitoring().state) {
                 showOnboarding = true
-            } else if !PermissionMemory.lostPermissions().isEmpty {
-                // 升级失权（上次有授权、这次没了）→ 自动弹精简重授权 sheet
-                showReauth = true
             }
             PermissionMemory.snapshot()
         }
@@ -118,6 +122,12 @@ struct RootView: View {
 
 /// 启动权限门槛的纯判定，避免 UI 生命周期把「向导已完成」误当成「权限仍有效」。
 enum PermissionGate {
+    static func shouldUseReauth(hasCompletedOnboarding: Bool,
+                                bluetooth: CBManagerAuthorization,
+                                lostCorePermissions: [String]) -> Bool {
+        hasCompletedOnboarding && bluetooth == .allowedAlways && !lostCorePermissions.isEmpty
+    }
+
     static func needsOnboarding(hasCompletedOnboarding: Bool,
                                 bluetooth: CBManagerAuthorization,
                                 accessibility: EnvCheckState,

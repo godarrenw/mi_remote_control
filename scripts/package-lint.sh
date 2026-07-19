@@ -41,6 +41,7 @@ fi
 
 # 2. DR 锚定证书
 DR1="$(codesign -d -r- "$APP" 2>&1 | grep '^designated' || true)"
+CDHASH1="$(codesign -d --verbose=4 "$APP" 2>&1 | sed -n 's/^CDHash=//p' | head -1)"
 if echo "$DR1" | grep -q 'certificate leaf'; then
     pass "DR 锚定 certificate leaf"
     note "$DR1"
@@ -77,19 +78,27 @@ else
     fail "主可执行缺失/不可执行"
 fi
 
-# 5. zip 往返后签名仍有效
-ZIP="$(ls -t dist/MiRemote-*.zip 2>/dev/null | head -1 || true)"
-if [ -n "$ZIP" ]; then
+# 5. zip 往返后签名/身份仍有效。必须绑定 package.sh 当前版本的正式 ZIP，
+# 不能从目录里任选“最新”（可能误验旧版、测试包或 -unsigned 包）。
+SHORT_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0")"
+ZIP="dist/MiRemote-$SHORT_VERSION.zip"
+if [ -f "$ZIP" ]; then
     RT="$(mktemp -d)"
     ditto -x -k "$ZIP" "$RT"
-    if codesign --verify --strict "$RT/MiRemote.app" 2>/dev/null; then
+    RT_APP="$RT/MiRemote.app"
+    RT_DR="$(codesign -d -r- "$RT_APP" 2>&1 | grep '^designated' || true)"
+    RT_CDHASH="$(codesign -d --verbose=4 "$RT_APP" 2>&1 | sed -n 's/^CDHash=//p' | head -1)"
+    RT_BID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$RT_APP/Contents/Info.plist" 2>/dev/null || true)"
+    if codesign --verify --strict "$RT_APP" 2>/dev/null \
+        && [ -n "$CDHASH1" ] && [ "$RT_CDHASH" = "$CDHASH1" ] \
+        && [ "$RT_DR" = "$DR1" ] && [ "$RT_BID" = "$BID" ]; then
         pass "zip 往返后签名有效 ($ZIP)"
     else
-        fail "zip 往返后签名失效 ($ZIP)"
+        fail "zip 往返后签名/CDHash/DR/bundle id 与当前 app 不一致 ($ZIP)"
     fi
     rm -rf "$RT"
 else
-    fail "找不到 dist/MiRemote-*.zip"
+    fail "找不到当前版本正式 ZIP: $ZIP"
 fi
 
 # 5b. DMG 打包验证：make-dmg 产物可挂载、内容齐全、卷内 app 签名有效

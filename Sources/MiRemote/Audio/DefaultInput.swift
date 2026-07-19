@@ -6,6 +6,9 @@ import CoreAudio
 enum DefaultInput {
 
     private static var savedDevice: AudioDeviceID?
+    /// 正常会话在 ATVV 队列操作；退出时还可能与已开始执行的延迟恢复 work 交错。
+    /// 锁住 engage/restore 的完整读改写，保证重复恢复幂等且无静态变量数据竞争。
+    private static let stateLock = NSLock()
 
     private static func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(mSelector: selector,
@@ -56,6 +59,8 @@ enum DefaultInput {
 
     /// 语音开始：默认输入切到 deviceName，记住原设备。已切过则幂等。
     static func engage(deviceName: String) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         guard let target = findInputDevice(named: deviceName) else { return false }
         let cur = currentDefault()
         if cur == target { return true }
@@ -66,6 +71,8 @@ enum DefaultInput {
 
     /// 语音结束：还原原默认输入。
     static func restore() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         if let dev = savedDevice { _ = setDefault(dev) }
         savedDevice = nil
     }

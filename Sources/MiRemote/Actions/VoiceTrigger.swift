@@ -214,4 +214,56 @@ enum VoiceTrigger {
             }
         }
     }
+
+    /// 进程退出专用同步收尾：不等最短按住/去抖/IME 延迟，立即对称释放本会话
+    /// 的触发键、关闭 tap/double 会话并取回待恢复输入法。返回时全局键态已清理。
+    static func shutdown() {
+        let inputSourceToRestore: TISInputSource?
+        if Thread.isMainThread {
+            // VoiceTrigger 队列里可能已有 begin 正在 main.sync 做 TIS 操作；主线程若
+            // 直接 queue.sync 会互等。排入异步屏障并短暂泵主 RunLoop，直到清理完成。
+            let done = DispatchSemaphore(value: 0)
+            var result: TISInputSource?
+            queue.async {
+                result = shutdownLocked()
+                done.signal()
+            }
+            while done.wait(timeout: .now()) != .success {
+                _ = RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.01))
+            }
+            inputSourceToRestore = result
+        } else {
+            inputSourceToRestore = queue.sync { shutdownLocked() }
+        }
+
+        // 不可放在 queue 的同步区内：非主线程调用时 onMain 会形成互等。
+        if let inputSourceToRestore {
+            _ = onMain { TISSelectInputSource(inputSourceToRestore) }
+        }
+    }
+
+    /// 仅在 VoiceTrigger queue 上调用。
+    private static func shutdownLocked() -> TISInputSource? {
+        restoreGeneration &+= 1
+        releaseWork?.cancel()
+        releaseWork = nil
+
+        if let cfg = sessionConfig {
+            switch cfg.mode {
+            case .hold:
+                if isDown { post(down: false, config: cfg) }
+            case .tap, .double:
+                // 两种模式的结束动作都是单击一次。
+                tap(cfg)
+            }
+        } else if isDown {
+            // 防御性兜底：旧状态没有锁存配置时仍用当前配置释放。
+            post(down: false, config: config)
+        }
+        isDown = false
+        sessionConfig = nil
+        let source = savedInputSource
+        savedInputSource = nil
+        return source
+    }
 }

@@ -124,13 +124,14 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
     }
 
-    /// 停止并断开。
-    func stop() {
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.shouldRun = false
-            self.log("STOP requested")
-            self.teardownConnection(disconnect: true)
+    /// 同步停止并断开。调用返回时，stop 之前已排入 ATVV 队列的全部语音回调
+    /// 都已处理完，且后续外设回调因 peripheral 已摘除而不会再进入 VoiceBridgeApp。
+    /// 仅由 AppServices 生命周期线程调用，不得从 ATVV queue 内调用。
+    func stopAndWait() {
+        queue.sync {
+            shouldRun = false
+            log("STOP requested")
+            teardownConnection(disconnect: true)
         }
     }
 

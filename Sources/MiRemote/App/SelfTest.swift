@@ -642,6 +642,14 @@ enum SelfTest {
                 hasCompletedOnboarding: false, bluetooth: .allowedAlways,
                 accessibility: .granted, inputMonitoring: .granted),
                 "启动权限门槛：首次启动 → 弹向导")
+            expect(PermissionGate.shouldUseReauth(
+                hasCompletedOnboarding: true, bluetooth: .allowedAlways,
+                lostCorePermissions: ["辅助功能"]),
+                "启动权限路由：仅核心权限撤销 → 精简重授权")
+            expect(!PermissionGate.shouldUseReauth(
+                hasCompletedOnboarding: true, bluetooth: .denied,
+                lostCorePermissions: ["辅助功能"]),
+                "启动权限路由：蓝牙与核心权限同时失效 → 完整向导")
         }
 
         // 稳定性-1. HealthMonitor.computeOverall 四源汇聚纯逻辑

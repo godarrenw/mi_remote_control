@@ -355,20 +355,27 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
     /// 服务停止兜底：语音会话仍在进行时按锁存状态强制收尾
     ///（松开触发键、还原默认麦克风），防止 stop 后修饰键粘住/麦克风停在 BlackHole。
     func forceEndSessionIfActive() {
-        let (active, didSwitch, didDoubao, didTrigger): (Bool, Bool, Bool, Bool) = {
+        let hadPendingMicRestore = restoreWork != nil
+        restoreWork?.cancel()
+        restoreWork = nil
+        pendingTrigger = false
+        let (active, didSwitch): (Bool, Bool) = {
             cfgLock.lock(); defer { cfgLock.unlock() }
-            let r = (sessionActive, sessionSwitchedMic, sessionDoubao, triggered)
+            let r = (sessionActive, sessionSwitchedMic)
             sessionActive = false
             sessionSwitchedMic = false
             sessionDoubao = false
             return r
         }()
-        guard active else { return }
-        log("服务停止：语音会话仍在进行，强制收尾")
-        if didDoubao && didTrigger { VoiceTrigger.end() }
-        if didSwitch {
-            restoreWork?.cancel()
-            restoreWork = nil
+        if active {
+            log("服务停止：语音会话仍在进行，强制收尾")
+            onVoiceActive?(false)
+            sink.streamStopped()
+        }
+        // 即使 ATVV 已先发 VoiceStopped，普通 end 仍可能在等待最短按住/去抖；
+        // 服务停止必须无条件取消延迟并同步补 keyUp/恢复输入法。
+        VoiceTrigger.shutdown()
+        if didSwitch || hadPendingMicRestore {
             DefaultInput.restore()
         }
     }
@@ -718,8 +725,10 @@ final class AppServices {
         started = false
         eventListener.stop()
         health.stop()
-        bridge.stop()
-        voiceApp.forceEndSessionIfActive()   // 会话进行中被 stop：松触发键/还原麦克风
+        // 先同步排空 ATVV 队列，再从生命周期线程收尾 VoiceBridgeApp；否则首帧回调
+        // 可在 forceEnd 之后重新 begin，CLI 紧接 exit 时还会截断 BLE teardown。
+        bridge.stopAndWait()
+        voiceApp.forceEndSessionIfActive()   // 同步松触发键、还原输入法/麦克风
         tapEngine?.stop() // 恢复 hidutil 映射
         hidEngine?.stop()
         // observer / 回调解除：旧服务对象可释放，重新 start 不叠加回调。

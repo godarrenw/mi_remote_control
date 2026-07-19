@@ -30,6 +30,10 @@ ALLOW_UNSIGNED=0
 # 否则 package.sh --unsigned 产物可被无参 make-dmg 包装成不带 -unsigned 的"正式"DMG。
 check_dr() {
     local dr
+    local bid
+    local cert_tmp
+    local app_cert_sha
+    local keychain_cert_sha
     dr="$(codesign -d -r- "$1" 2>&1 | grep '^designated' || true)"
     if ! echo "$dr" | grep -q 'certificate leaf'; then
         echo "❌ 错误：$1 的 DR 未锚定 certificate leaf（当前: ${dr:-<空>}）。" >&2
@@ -38,6 +42,33 @@ check_dr() {
     fi
     if echo "$dr" | grep -q 'cdhash'; then
         echo "❌ 错误：$1 的 DR 含 cdhash——重编译必掉 TCC 授权，正式 DMG 拒绝打包。" >&2
+        return 1
+    fi
+    bid="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$1/Contents/Info.plist" 2>/dev/null || true)"
+    if [ "$bid" != "com.miremote.controller" ]; then
+        echo "❌ 错误：bundle id 漂移（当前: ${bid:-<空>}）。" >&2
+        return 1
+    fi
+    # “有 certificate leaf”还不够：另一张证书重签也会让 TCC 身份变化。
+    # 精确比较 app 叶证书与钥匙串固定 MiRemote Dev 证书的 DER SHA-256。
+    cert_tmp="$(mktemp -d)"
+    if ! codesign -d --extract-certificates "$cert_tmp/app-cert" "$1" >/dev/null 2>&1 \
+        || [ ! -f "$cert_tmp/app-cert0" ]; then
+        echo "❌ 错误：无法提取 app 叶证书。" >&2
+        rm -rf "$cert_tmp"
+        return 1
+    fi
+    app_cert_sha="$(shasum -a 256 "$cert_tmp/app-cert0" | awk '{print $1}')"
+    if ! security find-certificate -c "MiRemote Dev" -p 2>/dev/null \
+        | openssl x509 -outform DER > "$cert_tmp/keychain-cert.der" 2>/dev/null; then
+        echo "❌ 错误：钥匙串中找不到固定 MiRemote Dev 证书。" >&2
+        rm -rf "$cert_tmp"
+        return 1
+    fi
+    keychain_cert_sha="$(shasum -a 256 "$cert_tmp/keychain-cert.der" | awk '{print $1}')"
+    rm -rf "$cert_tmp"
+    if [ -z "$app_cert_sha" ] || [ "$app_cert_sha" != "$keychain_cert_sha" ]; then
+        echo "❌ 错误：app 并非由钥匙串中的固定 MiRemote Dev 证书签名。" >&2
         return 1
     fi
     return 0
