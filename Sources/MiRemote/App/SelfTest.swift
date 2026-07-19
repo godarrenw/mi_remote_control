@@ -193,6 +193,7 @@ enum SelfTest {
 
         // M2 模块自测
         expect(MappingEngine.selfCheck(), "MappingEngine 状态机自测")
+        expect(MappingEngine.tapRouteSelfCheck(), "M3 方向键分流快照/判定自测")
         expect(ActionRunner.selfCheck(), "ActionRunner 键表/修饰位自测")
 
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")

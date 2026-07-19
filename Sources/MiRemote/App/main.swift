@@ -185,15 +185,26 @@ func loadOrCreateConfig() -> MappingConfig {
         log("配置已加载: \(url.path)")
         return cfg
     }
-    // 默认配置：方向=方向键，OK=回车，返回=退格，菜单=调度中心，主页=启动台，
-    // TV=打开系统设置，电源=熄屏，音量=系统音量。语音键放行给 ATVV。
+    // 默认配置：方向=方向键（层1 示例：上下=音量），OK=回车/长按进层1/按住+方向=手势，
+    // 返回=退格，菜单=调度中心，主页=启动台，TV=打开系统设置，电源=熄屏，音量=系统音量。
+    // 语音键放行给 ATVV。
     var cfg = MappingConfig()
     cfg.profiles["global"] = [
-        "up":      KeyBinding(tap: .keyStroke(key: "up_arrow", mods: [])),
-        "down":    KeyBinding(tap: .keyStroke(key: "down_arrow", mods: [])),
+        "up":      KeyBinding(tap: .keyStroke(key: "up_arrow", mods: []),
+                              layers: ["1": .system("volume_up")]),
+        "down":    KeyBinding(tap: .keyStroke(key: "down_arrow", mods: []),
+                              layers: ["1": .system("volume_down")]),
         "left":    KeyBinding(tap: .keyStroke(key: "left_arrow", mods: [])),
         "right":   KeyBinding(tap: .keyStroke(key: "right_arrow", mods: [])),
-        "ok":      KeyBinding(tap: .keyStroke(key: "return", mods: [])),
+        "ok":      KeyBinding(tap: .keyStroke(key: "return", mods: []),
+                              hold: .layerMomentary(1),
+                              gesture: [
+                                  "up":    .system("mission_control"),
+                                  // window_cycle 占位：cmd+` 同应用窗口循环（M4 落地后换专用动作）
+                                  "down":  .keyStroke(key: "grave", mods: ["left_cmd"]),
+                                  "left":  .keyStroke(key: "left_bracket", mods: ["left_cmd", "left_shift"]),
+                                  "right": .keyStroke(key: "right_bracket", mods: ["left_cmd", "left_shift"]),
+                              ]),
         "back":    KeyBinding(tap: .keyStroke(key: "delete", mods: [])),
         "menu":    KeyBinding(tap: .system("mission_control")),
         "home":    KeyBinding(tap: .system("launchpad")),
@@ -234,6 +245,7 @@ var hidEngine: HIDEngine?
 if keysFlag {
     let km = KeyMapperApp(config: loadOrCreateConfig(), verbose: verbose)
     let tap = TapEngine(delegate: km)
+    tap.router = km.engine  // 方向键三态分流的快照来源
     let filter = IOHIDOnlyFilter(km)
     let hid = HIDEngine(delegate: filter)
     keyMapper = km

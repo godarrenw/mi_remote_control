@@ -5,8 +5,10 @@ import CoreGraphics
 /// macOS 不允许用户态 seize 蓝牙 HID 键盘（0xE00002C1），IOHID 独占不可行。
 /// 正路：hidutil 把有副作用的键在内核层重映射到 F13-F19（系统零默认行为），
 /// 再用 CGEventTap 捕获并吞掉这些中转键，反查回原始键触发动作。
-/// 方向键/音量键 v1 保持系统原生（默认行为即所需）。
-// ponytail: 方向/音量键暂不接管，层/手势要拦它们时再把这两组也搬进中转表
+/// 音量键保持系统原生（默认行为即所需）。
+/// M3：方向键也进中转表，TapEngine 按 MappingEngine 快照三态分流：
+/// 纯原生场景就地改写回方向键 keycode 放行（保住系统 autorepeat 与零延迟），
+/// 层/手势场景吞掉喂引擎。
 
 enum KeyRemapper {
 
@@ -19,8 +21,35 @@ enum KeyRemapper {
         (0x35, 0x6B, 106, .tv),     // F16
         (0x66, 0x6C, 64,  .power),  // F17
         (0x28, 0x6D, 79,  .ok),     // F18
+        // 方向键中转。F21-F24 在 macOS 没有虚拟键码（<HIToolbox/Events.h> 只到 kVK_F20，
+        // 2026-07 对照本机 SDK 核实），映过去系统不产事件——不可用。
+        // 故第 4 个中转用小键盘 Clear（usage 0x53 → kVK_ANSI_KeypadClear=71）：
+        // macOS 无 NumLock 状态、系统零默认行为，即使 tap 失效泄漏也不输出字符。
+        (0x52, 0x6E, 80,  .up),     // F19 (kVK_F19)
+        (0x51, 0x6F, 90,  .down),   // F20 (kVK_F20)
+        (0x50, 0x68, 105, .left),   // F13 (kVK_F13)
+        (0x4F, 0x53, 71,  .right),  // Keypad Clear (kVK_ANSI_KeypadClear)
         // voice 键不纳入中转：语音功能走 ATVV(BLE)，与 HID 按键无关；中转只会产生无用 autorepeat 干扰。
     ]
+
+    /// 方向键 → 原生方向键 keycode（就地改写放行用）。
+    static let nativeArrowKeycode: [RemoteKey: Int64] = [
+        .up: 126, .down: 125, .left: 123, .right: 124,   // kVK_UpArrow 等
+    ]
+
+    /// 方向键中转的三态分流判定（纯函数，供 self-test）。非方向键返回 nil。
+    enum DirectionVerdict: Equatable {
+        case rewrite(Int64)   // 就地改写为原生方向键 keycode 放行（含 autorepeat）
+        case drop             // 吞弃（引擎路径上的 autorepeat）
+        case engine           // 吞掉并转 ButtonEvent 喂 MappingEngine
+    }
+    static func directionVerdict(key: RemoteKey, isRepeat: Bool, route: TapRoute) -> DirectionVerdict? {
+        guard let arrow = nativeArrowKeycode[key] else { return nil }
+        if route.effectiveLayer == 0, !route.okDown, route.nativeDirections.contains(key) {
+            return .rewrite(arrow)
+        }
+        return isRepeat ? .drop : .engine
+    }
 
     static var keycodeMap: [Int64: RemoteKey] {
         Dictionary(uniqueKeysWithValues: table.map { ($0.keycode, $0.key) })
@@ -57,7 +86,11 @@ enum KeyRemapper {
 final class TapEngine: @unchecked Sendable {
 
     weak var delegate: HIDEngineDelegate?
+    /// 方向键分流的快照来源（MappingEngine）。nil 时方向键全走引擎路径（安全默认）。
+    weak var router: MappingEngine?
     private var tap: CFMachPort?
+    /// 当前按压走「原生改写放行」路径的方向键（只在 tap 回调线程读写）。
+    private var nativeHeldDirections: Set<RemoteKey> = []
 
     init(delegate: HIDEngineDelegate?) {
         self.delegate = delegate
@@ -105,7 +138,40 @@ final class TapEngine: @unchecked Sendable {
         guard let key = KeyRemapper.keycodeMap[keycode] else {
             return Unmanaged.passUnretained(event) // 非中转键，放行
         }
-        // 吞掉中转键并上报（注意：外接键盘的真 F13-F19 也会被吞——Mac 键盘几乎没有这些键，可接受）
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+
+        // 方向键三态分流：纯原生场景就地改写 keycode 放行（保住系统 autorepeat 与零延迟）。
+        // 分流只在首次 keyDown 时按 MappingEngine 快照决定（无锁级 unfair lock，毫秒级
+        // 陈旧可接受，见 TapRoute 注释）；autorepeat 与 keyUp 跟随该次按压记录的路径，
+        // 避免按压中途层变化导致原生 down 配不上 up（系统卡住方向键）或引擎收到孤儿 up。
+        if let arrow = KeyRemapper.nativeArrowKeycode[key] {
+            let wasNative = nativeHeldDirections.contains(key)
+            let verdict: KeyRemapper.DirectionVerdict
+            if type == .keyDown, !isRepeat {
+                verdict = KeyRemapper.directionVerdict(
+                    key: key, isRepeat: false, route: router?.tapRoute ?? TapRoute())!
+                if case .rewrite = verdict { nativeHeldDirections.insert(key) }
+                else { nativeHeldDirections.remove(key) }
+            } else {
+                if type == .keyUp { nativeHeldDirections.remove(key) }
+                verdict = wasNative ? .rewrite(arrow) : (isRepeat ? .drop : .engine)
+            }
+            switch verdict {
+            case .rewrite(let a):
+                event.setIntegerValueField(.keyboardEventKeycode, value: a)
+                return Unmanaged.passUnretained(event)
+            case .drop:
+                return nil
+            case .engine:
+                // 落到下方吞掉上报
+                break
+            }
+        } else if isRepeat {
+            // 非方向中转键的 autorepeat 也吞弃：重复 keyDown 会不断重置
+            // MappingEngine 的 hold 定时器，长按（如 ok→瞬时层）永远触发不了。
+            return nil
+        }
+        // 吞掉中转键并上报（注意：外接键盘的真 F13-F20/小键盘Clear 也会被吞——Mac 键盘几乎没有这些键，可接受）
         delegate?.hidButton(ButtonEvent(key: key, isDown: type == .keyDown,
                                         timeNs: DispatchTime.now().uptimeNanoseconds))
         return nil

@@ -1,4 +1,18 @@
 import Foundation
+import os
+
+/// TapEngine 回调线程同步读取的原子分流快照（M3 方向键三态分流）。
+/// 写方在引擎串行 queue 内整体替换，读方（CGEventTap runloop 线程）无阻塞读；
+/// 允许毫秒级陈旧（见 MappingEngine.publishTapRoute 的竞争窗口注释），但保证不撕裂。
+struct TapRoute: Sendable {
+    /// 生效层（0=基础层）。非 0 时方向键必须走引擎（层覆盖可能改语义）。
+    var effectiveLayer: Int = 0
+    /// ok 键是否物理按住（手势前置条件，按住期间方向键走引擎）。
+    var okDown: Bool = false
+    /// 「纯原生 tap」的方向键集合：tap=对应原生方向键 keyStroke 且无 hold/double。
+    /// layers 允许存在——层激活与否由 effectiveLayer 单独把关。
+    var nativeDirections: Set<RemoteKey> = []
+}
 
 /// 按键映射状态机（DESIGN.md §3.1-§3.3）。
 ///
@@ -72,6 +86,41 @@ final class MappingEngine: @unchecked Sendable {
     /// 生效层 = 瞬时层优先，否则锁定层。
     private var effectiveLayer: Int { momentaryLayer ?? lockedLayer }
 
+    /// ok 键物理按住标记（快照用，独立于 states 的相位机）。
+    private var okPhysicallyDown = false
+
+    // MARK: - 分流快照（tap 回调线程读，引擎 queue 写）
+
+    /// 已知竞争窗口（接受）：ok 按下与方向键几乎同时到达时，方向键在 tap 回调里读到的
+    /// 快照可能还没来得及标记 okDown，导致这次手势漏判成普通方向键。窗口是
+    /// tap 回调 → 引擎 queue 异步投递的毫秒级延迟，用户几乎无法复现，不做同步等待
+    /// （tap 回调同步 dispatch 到引擎 queue 有死锁/输入延迟风险）。
+    private let tapRouteLock = OSAllocatedUnfairLock(initialState: TapRoute())
+
+    /// 供 TapEngine 在回调线程同步读取的分流快照。
+    var tapRoute: TapRoute { tapRouteLock.withLock { $0 } }
+
+    /// 在引擎 queue 内重算并整体替换快照。调用时机：init、setConfig、setActiveProfile、
+    /// 生效层变化、ok 物理按下/松开。
+    private func publishTapRoute() {
+        var native: Set<RemoteKey> = []
+        for key in [RemoteKey.up, .down, .left, .right] {
+            if let b = binding(for: key),
+               b.hold == nil, b.double == nil,
+               b.tap == .keyStroke(key: Self.nativeArrowName[key]!, mods: []) {
+                native.insert(key)
+            }
+        }
+        let route = TapRoute(effectiveLayer: effectiveLayer,
+                             okDown: okPhysicallyDown,
+                             nativeDirections: native)
+        tapRouteLock.withLock { $0 = route }
+    }
+
+    private static let nativeArrowName: [RemoteKey: String] = [
+        .up: "up_arrow", .down: "down_arrow", .left: "left_arrow", .right: "right_arrow",
+    ]
+
     // MARK: - 定时/调度注入（便于 selfCheck 用虚拟时钟做确定性测试）
 
     /// 把工作投递到执行上下文（生产=串行 queue.async；测试=同步就地执行）。
@@ -105,6 +154,7 @@ final class MappingEngine: @unchecked Sendable {
         self.dispatch = dispatch
         self.scheduleAfter = scheduleAfter
         self.globalProfile = config.profiles["global"] ?? [:]
+        publishTapRoute()
     }
 
     // MARK: - 对外 API（均切到执行上下文）
@@ -135,6 +185,7 @@ final class MappingEngine: @unchecked Sendable {
         } else {
             activeOverlay = nil
         }
+        publishTapRoute()
         log("CONFIG reloaded holdMs=\(config.settings.holdMs) doubleMs=\(config.settings.doubleMs)")
     }
 
@@ -147,9 +198,14 @@ final class MappingEngine: @unchecked Sendable {
             activeOverlay = nil
             log("PROFILE global (bundle=\(bundleID ?? "nil"))")
         }
+        publishTapRoute()
     }
 
     private func _handle(_ event: ButtonEvent) {
+        if event.key == .ok, okPhysicallyDown != event.isDown {
+            okPhysicallyDown = event.isDown
+            publishTapRoute()
+        }
         if event.isDown {
             handleDown(event.key)
         } else {
@@ -331,6 +387,7 @@ final class MappingEngine: @unchecked Sendable {
         let eff = effectiveLayer
         guard eff != lastNotifiedLayer else { return }
         lastNotifiedLayer = eff
+        publishTapRoute()
         delegate?.layerChanged(eff)
         log("LAYER \(eff)")
     }
@@ -508,6 +565,102 @@ extension MappingEngine {
         }
 
         if ok { print("[MappingEngine.selfCheck] all scenarios passed") }
+        return ok
+    }
+
+    /// M3 分流快照 + TapEngine 判定的纯逻辑自测（同步 dispatch + 虚拟时钟）。
+    static func tapRouteSelfCheck() -> Bool {
+        var ok = true
+        func expect(_ cond: Bool, _ msg: String) {
+            if !cond { ok = false; print("[MappingEngine.tapRouteSelfCheck] FAIL: \(msg)") }
+        }
+
+        // 配置：up/down/left 纯原生（up 带 layers 仍算纯原生——层由 effectiveLayer 把关）；
+        // right 配了 double → 非纯原生；ok hold=瞬时层1；tv hold=锁定层2。
+        func makeConfig() -> MappingConfig {
+            var cfg = MappingConfig()
+            cfg.settings.holdMs = 100
+            cfg.settings.doubleMs = 80
+            cfg.profiles["global"] = [
+                "up":    KeyBinding(tap: .keyStroke(key: "up_arrow", mods: []),
+                                    layers: ["1": .system("volume_up")]),
+                "down":  KeyBinding(tap: .keyStroke(key: "down_arrow", mods: [])),
+                "left":  KeyBinding(tap: .keyStroke(key: "left_arrow", mods: [])),
+                "right": KeyBinding(tap: .keyStroke(key: "right_arrow", mods: []),
+                                    double: .system("play_pause")),
+                "ok":    KeyBinding(tap: .keyStroke(key: "return", mods: []),
+                                    hold: .layerMomentary(1),
+                                    gesture: ["up": .system("mission_control")]),
+                "tv":    KeyBinding(hold: .layerToggle(2)),
+            ]
+            cfg.profiles["com.example.app"] = [
+                "down": KeyBinding(tap: .keyStroke(key: "down_arrow", mods: []),
+                                   hold: .system("mute")),   // overlay 里 down 带 hold → 非纯原生
+            ]
+            return cfg
+        }
+
+        let clock = ManualClock()
+        let engine = MappingEngine(config: makeConfig(),
+                                   runner: RecordingRunner(),
+                                   delegate: nil,
+                                   dispatch: { $0() },
+                                   scheduleAfter: { ms, work in clock.schedule(ms, work) })
+        func down(_ k: RemoteKey) { engine.handle(ButtonEvent(key: k, isDown: true, timeNs: 0)) }
+        func up(_ k: RemoteKey)   { engine.handle(ButtonEvent(key: k, isDown: false, timeNs: 0)) }
+
+        // 1) 初始快照：层0、ok 未按、up/down/left 纯原生、right 不是（有 double）。
+        var r = engine.tapRoute
+        expect(r.effectiveLayer == 0 && !r.okDown, "1 initial layer/ok")
+        expect(r.nativeDirections == [.up, .down, .left], "1 nativeDirections")
+
+        // 2) 判定：纯原生方向 → 改写放行（含 autorepeat 也由 TapEngine 按压记录跟随）。
+        expect(KeyRemapper.directionVerdict(key: .up, isRepeat: false, route: r) == .rewrite(126),
+               "2 up → rewrite(126)")
+        expect(KeyRemapper.directionVerdict(key: .right, isRepeat: false, route: r) == .engine,
+               "2 right(有double) → engine")
+        expect(KeyRemapper.directionVerdict(key: .right, isRepeat: true, route: r) == .drop,
+               "2 right autorepeat → drop")
+        expect(KeyRemapper.directionVerdict(key: .ok, isRepeat: false, route: r) == nil,
+               "2 非方向键 → nil")
+
+        // 3) ok 物理按下 → 快照 okDown，方向键走引擎（手势窗口）；松开还原。
+        down(.ok)
+        r = engine.tapRoute
+        expect(r.okDown, "3 okDown after ok down")
+        expect(KeyRemapper.directionVerdict(key: .up, isRepeat: false, route: r) == .engine,
+               "3 up under ok → engine")
+        up(.ok); clock.advance(200)
+        expect(!engine.tapRoute.okDown, "3 okDown cleared after ok up")
+
+        // 4) ok 长按进瞬时层1 → 快照层1；松开回落层0。
+        down(.ok); clock.advance(100)
+        r = engine.tapRoute
+        expect(r.effectiveLayer == 1, "4 momentary layer in snapshot")
+        expect(KeyRemapper.directionVerdict(key: .up, isRepeat: false, route: r) == .engine,
+               "4 layered up → engine")
+        up(.ok)
+        expect(engine.tapRoute.effectiveLayer == 0, "4 layer back to 0")
+
+        // 5) tv 长按锁定层2 → 快照层2；再长按解锁。
+        down(.tv); clock.advance(100); up(.tv)
+        expect(engine.tapRoute.effectiveLayer == 2, "5 locked layer in snapshot")
+        down(.tv); clock.advance(100); up(.tv)
+        expect(engine.tapRoute.effectiveLayer == 0, "5 unlocked")
+
+        // 6) setActiveProfile overlay：down 被 overlay 覆盖成带 hold → 失去纯原生；切回还原。
+        engine.setActiveProfile("com.example.app")
+        expect(engine.tapRoute.nativeDirections == [.up, .left], "6 overlay drops down")
+        engine.setActiveProfile(nil)
+        expect(engine.tapRoute.nativeDirections == [.up, .down, .left], "6 restore on global")
+
+        // 7) setConfig 热加载：up 增加 hold → 失去纯原生。
+        var cfg2 = makeConfig()
+        cfg2.profiles["global"]?["up"]?.hold = .system("mute")
+        engine.setConfig(cfg2)
+        expect(engine.tapRoute.nativeDirections == [.down, .left], "7 config reload drops up")
+
+        if ok { print("[MappingEngine.tapRouteSelfCheck] all scenarios passed") }
         return ok
     }
 }

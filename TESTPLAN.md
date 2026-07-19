@@ -581,6 +581,122 @@
 
 ---
 
+## M3-M6 验收执行方案（分层）
+
+> 本部分是把上面 M3-M6 条目落到「怎么跑」的四层执行剧本：自动化层每次构建跑、半自动层无遥控器在终端跑、实机层用户只按遥控器主会话盯日志、打包验收层模拟新用户。M3/M4 部分动作正在并行实现中，标注 🚧 的为「应有测试项」（验收对照表），实现到位即勾选。
+
+### 第 1 层 · 自动化（每次构建 `./build.sh && .build/miremote --self-test` 必跑全绿）
+
+> `--self-test` 是本项目的测试载体（CLT 无 XCTest，测试编进二进制）。下表为 M3-M6 应新增的自检点，与既有 14 项并列。
+
+| 自检点 | 覆盖 TESTPLAN 条目 | 断言要点 | 状态 |
+|---|---|---|---|
+| **M3 分流快照** — tap/hold/double 状态机 | M3-01/02/03/04/05 | 合成 ButtonEvent + 虚拟时钟：349ms→tap、351ms→hold（350ms 触发不等松开）、双击 240ms→double/260ms→两次 tap、double 关→零延迟 tap；holdMs/doubleMs 改值边界随动 | 🚧 |
+| **M3 层/手势快照** | M3-06/07/08/09/10 | momentary 进层/回落、**层内按键未松层键先松（按下时层结算，无撕裂无卡键）**、toggle 锁定/解锁、OK+四方向手势各一次、多键同按互不干扰 | 🚧 |
+| **M3 profile 快照** | M3-11/13 | `_inherits` overlay 继承（覆盖键取新值其余同 global，循环继承被拒）、**热切换时按键进行中按按下时 profile 完整结算** | 🚧 |
+| **M3 配置容错** | M3-15 | 损坏/空/未知 type/未知 version JSON → 保留上一份有效配置；首启即损坏 → 回退内置默认 | 🚧 |
+| **M4 Action 编解码 round-trip** | 契约 | 对 `window_cycle`/`tab_jump`/`focus_input`/`mouse_mode`/`macro` 五个新 type：encode→decode 等价还原；未知 type → 安全落 `none`（对照 `Contracts.swift` 现有 8 型行为） | 🚧 |
+| **M4 宏序列器** | M4-15/16 | 步骤按序执行、延时步进计数正确；**不可重入**（执行中重复触发被忽略或排队，二选一固定）；中断不留半按修饰键 | 🚧 |
+| **M4 鼠标加速曲线（纯函数）** | M4-13 | 曲线采样：初速 ~4px/tick 单调加速至 ~40px/tick、1.5s 到顶；短按=最小步进；松开归零。纯数值断言不动真光标 | 🚧 |
+
+验收线：`--self-test` 退出码 0，新增点全部并入既有全绿输出；任一失败即阻断打包。
+
+### 第 2 层 · 半自动冒烟（无遥控器，终端 `--run-action '<json>'` 逐条跑）
+
+> 约定接口（M4 并行实现中）：`.build/miremote --run-action '<Action-JSON>'` 立即执行单个动作 JSON 后退出，JSON 同 `Contracts.swift` 的 `Action` Codable 模型。⚠️ 标注「真实动键鼠」的命令会合成真实事件，须用户在场且前台有正确 app/焦点；其余为纯逻辑或系统 API 可脚本断言。
+
+| # | 命令（可复制） | 预期可观察结果 | 动键鼠/需在场 |
+|---|---|---|---|
+| R-01 | `.build/miremote --run-action '{"type":"key_stroke","key":"return","mods":[]}'` | 前台文本框落一个回车（既有能力，回归基线） | ✅ 需焦点在文本框 |
+| R-02 | `.build/miremote --run-action '{"type":"system","value":"mission_control"}'` | 调度中心弹出（既有） | ✅ |
+| R-03 | `.build/miremote --run-action '{"type":"open_app","value":"com.mitchellh.ghostty"}'` | Ghostty 打开或激活（既有）；bundle 不存在 → stderr 报错退非 0 不崩溃 | ✅ |
+| R-04 | `.build/miremote --run-action '{"type":"shell","value":"echo miremote-smoke > /tmp/mr_smoke.txt"}'` | `/tmp/mr_smoke.txt` 生成（既有）；`sleep 60` 应在超时后被终止且不阻塞退出 | 否（可脚本断言） |
+| R-05 🚧 | `.build/miremote --run-action '{"type":"window_cycle"}'` | 同 app 多窗口按序前置（AXRaise 生效，非仅 activate）；前台需为开了 ≥2 窗口的 app（如 Ghostty） | ✅ 需前台多窗口 |
+| R-06 🚧 | `.build/miremote --run-action '{"type":"tab_jump","dir":1}'` | 前台 app 收到 cmd+shift+] 相对切下一标签；`{"type":"tab_jump","index":2}` 直跳第 2 标签（cmd+2）；越界标签不崩溃 | ✅ 需前台多标签 |
+| R-07 🚧 | `.build/miremote --run-action '{"type":"focus_input"}'` 于 **Ghostty**（Claude Code 前台后台均可） | 第 1 级命中：窗口前置即等于聚焦输入行，直接打字落入 TUI；日志记 `focus level=1` | ✅ |
+| R-08 🚧 | `.build/miremote --run-action '{"type":"focus_input"}'` 于 **微信**（焦点先移到会话列表） | 第 2 级 AX：焦点回聊天输入框，可直接打字；日志记 `focus level=2` | ✅ 需微信前台 |
+| R-09 🚧 | `.build/miremote --run-action '{"type":"focus_input"}'` 于 **Chrome/Electron**（输入框未聚焦） | 写 `AXManualAccessibility`/`AXEnhancedUserInterface` 后 AX 树可遍历，AXTextArea 聚焦；全失败 → 提示音/角标不静默；日志记所用级别 | ✅ 需 Chrome 前台 |
+| R-10 🚧 | `.build/miremote --run-action '{"type":"mouse_mode"}'` | 进入鼠标模式：状态角标常显、方向键=光标可动、OK=左键、菜单=右键、返回退出；退出后角标消失、方向键恢复原映射 | ✅ 进入后需用户操作 |
+| R-11 🚧 | `.build/miremote --run-action '{"type":"macro","steps":[{"type":"open_app","value":"com.apple.TextEdit"},{"delay":500},{"type":"key_stroke","key":"h"},{"type":"key_stroke","key":"i"},{"type":"key_stroke","key":"return"}]}'` | 按序：打开 TextEdit→延时 500ms（±50ms）→输入 "hi"→回车；执行中重复触发被忽略/排队 | ✅ |
+| R-12 🚧 | `.build/miremote --run-action '{"type":"voice"}'`（模式 B） | 切豆包输入法→合成右 Option（flagsChanged，设备位 0x40）进语音态；无遥控器时验证触发链路本身，出字需真麦克风 | ✅ |
+
+验收线：R-01…R-04 现即可全绿（回归基线）；R-05…R-12 随 M4 实现逐条转绿，每条命令与「预期可观察结果」一致。
+
+### 第 3 层 · 实机连贯流程（用户只按遥控器，主会话跑 `.build/miremote --verbose --keys --doubao` 盯日志）
+
+> 一次连贯按完，10 分钟内。三列＝**用户动作 → 预期日志关键字 → 预期屏幕行为**。前置：遥控器已配对、输入监控+辅助功能已授、hidutil 中转已装载、豆包麦克风=BlackHole。
+
+**S3 场景脚本（顺序执行）**
+
+| 步 | 用户动作 | 预期日志关键字 | 预期屏幕行为 |
+|---|---|---|---|
+| 1 | 焦点置 TextEdit，方向键 ↑↓←→ 各按一次 | 无中转日志（方向键 v1 原生直通） | 光标/滚动按系统原生响应，App 不吞 |
+| 2 | 按住 ↓ 不放 1.5 秒 | 原生 autorepeat，无 App 介入 | 列表/页面连续滚动，松开即停 |
+| 3 | 短按 OK | `tap OK → key_stroke return` | TextEdit 落一个回车 |
+| 4 | 按住 OK >350ms（进层，不松） | `hold OK → layer_momentary(1)`、`layer=1 角标显示` | 菜单栏图标/浮动角标显示层态 |
+| 5 | 层内按 ↑（OK 仍按住） | `layer:1 ↑ → key_stroke k+right_option` | 层内动作生效（非基础层 ↑） |
+| 6 | 松开 OK | `layer=0 回落` | 角标消失，↑ 恢复基础映射 |
+| 7 | 关键边界：按住 OK 进层→按下 ↑ 不松→先松 OK→再松 ↑ | `↑ 按下时层结算，松开同源收尾`，无 `stuck` | 无卡键、无撕裂（down/up 同层配对） |
+| 8 | OK+方向四手势：按住 OK→依次按放 ↑↓←→→松开 OK | `gesture up/down/left/right 各一次`、松开 OK `无 tap/hold 补发` | 四手势动作各触发一次 |
+| 9 | 层锁定：点击配了 toggle_layer 的键→按其他键→再点一次解锁 | `layer_toggle 锁定 → 解锁`、状态回调 | 角标持续显示层锁定直至再次点击 |
+| 10 | 回归键不破坏：依次按 返回 < / 菜单 ≡ / 主页 ⌂ | `back→退格/Esc`、`menu→调度中心`、`home→Spotlight` | 各自动作正确，无残留层态、无卡键 |
+| 11 | 语音并行：任意上述层态下按住语音键说「测试一二三」松开 | `ATVV MIC_OPEN → 首帧 → 豆包触发 → MIC_CLOSE`，与按键日志不交叉错乱 | 豆包出字，按键映射不受语音影响 |
+
+验收线：11 步一次跑通，日志关键字齐、屏幕行为符合、无卡键/无双触发/无层态残留（对应正式条目 M3-16 实机验收）。
+
+### 第 4 层 · 打包验收（M6，模拟全新用户，总时长 ≤5 分钟、零重启）
+
+> 目标：DESIGN §9 M6 验收标准——干净 Mac 从 zip 到可用 ≤5 分钟。用一台无开发环境的干净 Mac 或新建标准用户；无干净机时用「干净测试」要点在本机模拟首次授权。
+
+**P4 主流程（计时）**
+
+| 步 | 动作 | 预期 |
+|---|---|---|
+| 1 | 解压 zip，双击 .app | Gatekeeper 拦截（未公证自签）；系统设置→隐私与安全性→「仍要打开」后启动；README 文案与实际系统 UI 一致 |
+| 2 | 三步向导 · 权限 | 蓝牙弹窗→输入监控跳转授权→辅助功能跳转授权；每项 `IOHIDCheckAccess`/`AXIsProcessTrusted` 实时检测，授权后自动打勾进下一步 |
+| 3 | 三步向导 · BlackHole | 未装则一键装（内置包）+ 管理员密码 → `killall coreaudiod` 约 1 秒后设备出现，不重启电脑；`system_profiler SPAudioDataType` 可见 BlackHole 2ch |
+| 4 | 三步向导 · 配对 | 图示长按组合键 3 秒 → 系统蓝牙点连接 → HID 设备出现即自动判完成 |
+| 5 | 全功能验收 | 用遥控器语音打出一句话 + 按 OK/方向/菜单各生效 |
+| 6 | **重启 app 权限存活** | 退出并重开 .app，无需重新授权，全功能直接可用 |
+| 7 | **重编译后权限存活（TCC 稳定签名验收点）** | 重跑打包脚本产出新 .app 覆盖安装，输入监控/辅助功能授权仍在（稳定签名 identity 不变，TCC 记录不失效）——这是相对 HANDOFF「每次重编译临时签名变化需重授权」的收敛目标 |
+
+**「干净测试」要点（本机模拟首次授权，不需第二台 Mac）**
+
+```bash
+# 1. 模拟全新用户：重置本 app 全部 TCC 授权
+tccutil reset All <bundle-id>            # 或分项 tccutil reset ListenEvent / Accessibility / Bluetooth <bundle-id>
+
+# 2. 退出后验证 hidutil 中转已恢复（应为空，无残留 UserKeyMapping）
+hidutil property --matching '{"VendorID":0x2717,"ProductID":0x32B8}' --get "UserKeyMapping"
+#   预期：退出后返回空映射（{"UserKeyMapping":()} 或空），确认 home/menu/tv/power/ok 中转已清、真键盘无污染
+
+# 3. 打包完整性（脚本断言，对应 M6-06）
+#   Info.plist 含 NSBluetoothAlwaysUsageDescription、LSMinimumSystemVersion 14.0；
+#   Resources 含 BlackHole 安装包+默认配置；codesign -v 通过；zip 解压后签名仍有效
+```
+
+验收线：P4 六步 ≤5 分钟零重启（对应 M6-05）；重编译后授权存活（稳定签名达成）；退出后 hidutil `--get` 确认映射已清空、系统恢复干净。
+
+---
+
+## 回归红线（M1/M2 已验收行为 · 任何后续改动后必重测的最小集）
+
+> M1/M2 已实机验收通过（HANDOFF 2026-07-19）。下列为不可回退的红线行为，M3-M6 任何改动合入后必跑一遍，≤3 分钟。任一失败即视为回归，先修再继续。
+
+| # | 红线项 | 快速验证 | 来源 |
+|---|---|---|---|
+| RL-01 | 语音出字 | 按住语音键说「测试一二三」松开 → 豆包出字，无残留语音条 | M1-21 |
+| RL-02 | 语音防抖三件套 | 快速按放语音键 3 次不卡死；幽灵零帧会话不触发豆包 | M1-19 / HANDOFF |
+| RL-03 | 13 键全收到 | `--verbose --keys` 逐键按，含**返回键 0xF1**（曾遗留、已修）应见 `IOHID读到 back` | M2-01 / HANDOFF 遗留修复 |
+| RL-04 | OK 无双触发 | TextEdit 按 OK 10 次 = 恰 10 个回车 | M2-04 |
+| RL-05 | 中转键动作 | 菜单→调度中心、主页→Spotlight、TV→系统设置各生效 | M2-10 / HANDOFF |
+| RL-06 | 语音与按键并行 | 说话同时按方向键，两路互不干扰 | HANDOFF |
+| RL-07 | 退出恢复干净 | 退出 App → `hidutil ... --get UserKeyMapping` 返回空；真键盘 F5 正常 | M2-08 / HANDOFF |
+
+验收线：RL-01…RL-07 全绿方可宣称「M3-M6 改动未破坏 M1/M2」。
+
+---
+
 ## 统计
 
 | 类型 | 条数 | 条目 |
