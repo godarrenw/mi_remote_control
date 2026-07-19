@@ -32,7 +32,6 @@ struct PermissionCheckRow: View {
                 if let action {
                     Button(actionTitle) { action() }
                         .controlSize(.small)
-                        .buttonStyle(.borderedProminent)
                 }
             case .unknown:
                 Label("检测中…", systemImage: "circle.dotted")
@@ -77,12 +76,13 @@ struct OnboardingWizard: View {
                 // 步骤指示器
                 HStack(spacing: 8) {
                     ForEach(0..<3, id: \.self) { i in
-                        Circle()
+                        Capsule()
                             .fill(i == step ? Color.accentColor : Color.secondary.opacity(0.3))
-                            .frame(width: 8, height: 8)
+                            .frame(width: i == step ? 20 : 8, height: 8)
                         if i < 2 { Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 32, height: 1) }
                     }
                 }
+                .animation(Motion.focus, value: step)
                 Spacer()
                 Button {
                     dismiss()
@@ -90,6 +90,7 @@ struct OnboardingWizard: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
                 .help("稍后设置；下次启动仍会显示向导")
             }
             .padding(.top, 4)
@@ -125,7 +126,7 @@ struct OnboardingWizard: View {
                         .help(ax == .granted && im == .granted && bt == .granted ? "" : "授权全部完成后继续")
                 } else if step == 1 {
                     Button(blackhole == .granted ? "下一步" : "跳过") { step = 2 }
-                        .buttonStyle(blackhole == .granted ? .borderedProminent : .borderedProminent)
+                        .buttonStyle(.borderedProminent)
                 } else {
                     Button(remote == .granted ? "完成" : "稍后配对，直接完成") {
                         model.hasCompletedOnboarding = true
@@ -173,7 +174,7 @@ struct OnboardingWizard: View {
                 if let url = EnvironmentCheck.accessibility().guideURL { NSWorkspace.shared.open(url) }
             }
             Text("提示：正式签名版正常更新会保留授权；测试版或签名身份变化时可能需要重新授权。")
-                .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                .font(.footnote).foregroundStyle(.tertiary)
         }
     }
 

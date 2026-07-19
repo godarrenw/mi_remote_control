@@ -9,14 +9,28 @@ gh auth login                    # 浏览器授权 GitHub CLI（选 SSH 或 HTTP
 ./scripts/setup-signing.sh       # 创建固定签名证书 "MiRemote Dev"（按提示完成两个手动步骤）
 ```
 
-## 1. 建仓并首次推送
+## 1. 仓库元数据（一键设置 description / topics / homepage）
+
+仓库已上线：https://github.com/godarrenw/mi_remote_control 。`gh auth login` 后跑一次即可
+把描述、话题标签、主页补齐（GitHub 仓库右侧栏与搜索会用到）：
 
 ```bash
 cd /Users/<you>/Code/remote-controller
-git add -A && git commit -m "chore: open-source release prep"   # 若主会话尚未提交
 
-gh repo create miremote --public --source=. --push --description \
-  "小米蓝牙遥控器 2 Pro → macOS 全能控制台：躺着指挥 AI 写代码"
+gh repo edit godarrenw/mi_remote_control \
+  --description "小米蓝牙遥控器 2 Pro → macOS 全能控制台：躺着指挥 AI 写代码" \
+  --homepage "https://github.com/godarrenw/mi_remote_control#readme" \
+  --add-topic macos \
+  --add-topic swift \
+  --add-topic remote-control \
+  --add-topic xiaomi \
+  --add-topic bluetooth \
+  --add-topic voice-input \
+  --add-topic ai \
+  --add-topic claude-code \
+  --add-topic accessibility \
+  --add-topic hidutil \
+  --enable-issues --enable-discussions
 ```
 
 推送前确认 `.gitignore` 已排除 `dist/`、`.build/`、`*.wav` 等（本仓已配好）。
@@ -31,16 +45,60 @@ gh repo create miremote --public --source=. --push --description \
 
 `package-lint.sh` 全绿再往下走。
 
-## 3. 发布 Release 并上传 DMG
+## 3. 首个 Release（v0.1.0，Actions 自动出包）
+
+推荐走 CI：打 `v0.1.0` tag 后 `.github/workflows/release.yml` 会自动构建、自检、组装
+ad-hoc 签名的 DMG + zip 并创建 Release。无需本地打包。
 
 ```bash
-VER="$(git describe --tags --always)"    # 或手动定 tag：VER=v0.1.0
-git tag "$VER" && git push origin "$VER"
+# 确认工作区干净、自检全绿
+./build.sh && .build/miremote --self-test
 
-gh release create "$VER" \
-  dist/MiRemote-*.dmg dist/MiRemote-*.zip \
-  --title "MiRemote $VER" \
-  --notes "首个公开预览版。安装说明见 README。语音需 BlackHole 2ch + 豆包输入法。"
+git tag v0.1.0 && git push origin v0.1.0     # 触发 Actions → 自动出 DMG Release
+```
+
+去 Actions 页看 Release 工作流跑完，产物会自动挂到
+https://github.com/godarrenw/mi_remote_control/releases/tag/v0.1.0 。
+随后编辑该 Release，把下面的 notes 模板贴进去（CHANGELOG.md 的 v0.1.0 段可直接复用）。
+
+<details>
+<summary>v0.1.0 Release notes 模板（亮点 / 安装 / 已知限制三段）</summary>
+
+```markdown
+## ✨ 亮点
+
+首个公开预览版：把小米蓝牙遥控器 2 Pro 变成 macOS 的全能控制台。
+
+- 语音输入：按住语音键说话，文字直接落进当前输入框（ATVV → ADPCM → BlackHole → 豆包）
+- 13 键映射引擎：单击 / 长按 / 双击 / 层 / 手势，默认零同按组合，单手拇指全操作
+- App 控制模式 + AI 批准层：终端里 OK 批准、返回拒绝，为 AI Coding Agent 定制
+- 窗口选择器、鼠标模式、宏 / shell、预设库、SwiftUI 设置界面、三步向导、`--doctor` 自愈
+
+## 📦 安装
+
+1. 下载 `MiRemote-0.1.0.dmg`，打开后把 MiRemote.app 拖进「应用程序」
+2. **首次打开右键 → 打开**（未做 Apple 公证，属正常）
+3. 按向导授予蓝牙 / 输入监控 / 辅助功能三项权限
+4. 语音打字额外需装 [BlackHole 2ch](https://existential.audio/blackhole/) 与豆包输入法
+
+详见 [README](https://github.com/godarrenw/mi_remote_control#readme)。
+
+## ⚠️ 已知限制
+
+- 未公证：每次升级新版本需重新授权一次（约 30 秒，配置不丢失）
+- Secure Input（密码输入）期间方向键可能以中转键泄漏进前台，v1 接受此限制
+```
+
+</details>
+
+若要本地手动出包（无 Actions 时的兜底）：
+
+```bash
+VER=v0.1.0
+git tag "$VER" && git push origin "$VER"
+./scripts/package.sh && ./scripts/make-dmg.sh && ./scripts/package-lint.sh
+gh release create "$VER" dist/MiRemote-*.dmg dist/MiRemote-*.zip \
+  --title "MiRemote $VER" --notes-file RELEASE_NOTES.md
 ```
 
 ## 4. 后续每次发版

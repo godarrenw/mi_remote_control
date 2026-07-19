@@ -54,6 +54,7 @@ struct ShortcutRecorderSheet: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
                 .help("取消录制")
             }
 
@@ -65,15 +66,17 @@ struct ShortcutRecorderSheet: View {
                     Text(warn).font(.caption).foregroundStyle(.yellow)
                 }
                 HStack {
-                    Button("↻ 重录") {
+                    Spacer()
+                    Button("重录") {
                         captured = nil
                         startMonitor()
                     }
-                    Button("✓ 确认") {
+                    Button("确认") {
                         stopMonitor()
                         onConfirm(.keyStroke(key: cap.key, mods: cap.mods))
                         dismiss()
                     }
+                    .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                 }
             } else if recording {

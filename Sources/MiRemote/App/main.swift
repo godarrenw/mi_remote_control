@@ -30,6 +30,10 @@ while let argument = args.first {
     case "--doctor":
         // 体检是 standalone 只读 + 残留清理；但有活实例时 hidutil 中转映射正在使用，
         // 不是残留——探测到活实例就跳过清理，绝不把在用的映射当残留清掉。
+        // 用户改过 settings 里的遥控器 VID/PID 时，体检的连接检测/映射匹配也要跟着走。
+        if let s = ConfigStore.loadIfExists(at: opts.configPath)?.settings {
+            RemoteIdentity.configure(vendorID: s.remoteVendorID, productID: s.remoteProductID)
+        }
         let report = HealthMonitor.runRepair(
             skipResidualCleanup: HealthMonitor.anotherInstanceRunning())
         print("MiRemote 一键体检")
@@ -67,6 +71,7 @@ while let argument = args.first {
     case "--output":
         cliServiceMode = true
         opts.outputName = args.isEmpty ? nil : args.removeFirst()
+        opts.outputExplicit = true
     case "--wav":
         cliServiceMode = true
         opts.wavPath = args.isEmpty ? nil : args.removeFirst()
@@ -87,16 +92,27 @@ while let argument = args.first {
         uiPreview = true
     case "--config":
         if !args.isEmpty { opts.configPath = args.removeFirst() }
+    // 语音触发三件套：既立即生效（--run-action 在参数解析期执行），也记录进 opts，
+    // 由 AppServices 按「CLI 覆盖 配置(voiceProfiles.global) 覆盖 内置默认」统一合并。
     case "--trigger-key":
-        if !args.isEmpty { VoiceTrigger.config.keyName = args.removeFirst() }
+        if !args.isEmpty {
+            let value = args.removeFirst()
+            VoiceTrigger.config.keyName = value
+            opts.cliTriggerKey = value
+        }
     case "--trigger-mode":
-        if !args.isEmpty, let mode = VoiceTriggerConfig.Mode(rawValue: args.removeFirst()) {
-            VoiceTrigger.config.mode = mode
+        if !args.isEmpty {
+            let value = args.removeFirst()
+            if let mode = VoiceTriggerConfig.Mode(rawValue: value) { VoiceTrigger.config.mode = mode }
+            opts.cliTriggerMode = value
         }
     case "--ime":
         if !args.isEmpty {
             let value = args.removeFirst()
-            VoiceTrigger.config.imeBundlePrefix = value == "none" ? nil : value
+            let prefix = value == "none" ? nil : value
+            VoiceTrigger.config.imeBundlePrefix = prefix
+            opts.cliIMEGiven = true
+            opts.cliIME = prefix
         }
     case "--run-action":
         guard !args.isEmpty else {

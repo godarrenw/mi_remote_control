@@ -2,6 +2,9 @@
 
 欢迎给 MiRemote 提 Issue 和 PR。项目很小、零第三方依赖，上手门槛低。
 
+参与前请阅读 [行为准则](CODE_OF_CONDUCT.md)。发现安全问题请走
+[SECURITY.md](SECURITY.md) 的私密通报渠道，不要开公开 Issue。
+
 ## 构建环境
 
 只需要 macOS 14+ 和 **Command Line Tools**（`xcode-select --install`），不用装完整

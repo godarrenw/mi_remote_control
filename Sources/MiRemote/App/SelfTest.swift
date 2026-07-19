@@ -906,6 +906,63 @@ enum SelfTest {
             expect(combo == nil, "工作/层预设零同按：无手势、TV hold 让位轮盘", combo ?? "")
         }
 
+        // CZ-1. Settings 新增覆盖项向后兼容：旧 JSON（无新字段）照常解码为 nil/默认。
+        do {
+            let old = #"{"holdMs":350,"doubleMs":250}"#
+            let s = try? JSONDecoder().decode(MappingConfig.Settings.self, from: Data(old.utf8))
+            expect(s != nil && s?.remoteVendorID == nil && s?.remoteProductID == nil
+                   && s?.voiceOutputDevice == nil && s?.terminalApps == nil,
+                   "旧 settings JSON 解码兼容（新字段全 nil）")
+            let new = #"{"holdMs":350,"doubleMs":250,"remoteVendorID":4660,"remoteProductID":43981,"voiceOutputDevice":"Loopback Audio","terminalApps":["com.example.term"]}"#
+            let s2 = try? JSONDecoder().decode(MappingConfig.Settings.self, from: Data(new.utf8))
+            expect(s2?.remoteVendorID == 0x1234 && s2?.remoteProductID == 0xABCD
+                   && s2?.voiceOutputDevice == "Loopback Audio"
+                   && s2?.terminalApps == ["com.example.term"],
+                   "新 settings 字段解码")
+        }
+
+        // CZ-2. 遥控器 VID/PID 注入贯通：hidutil matching 串与 VID/PID 同步生成，
+        // 默认值与历史硬编码字面量逐字节一致。
+        do {
+            expect(RemoteIdentity.hidutilMatching(vendorID: 0x2717, productID: 0x32B8)
+                   == #"{"VendorID":0x2717,"ProductID":0x32B8}"#,
+                   "hidutil matching 默认串与旧硬编码一致")
+            RemoteIdentity.configure(vendorID: 0x1234, productID: 0xABCD)
+            expect(RemoteIdentity.vendorID == 0x1234
+                   && RemoteIdentity.hidutilMatching == #"{"VendorID":0x1234,"ProductID":0xABCD}"#,
+                   "配置注入的 VID/PID 贯通到 matching 串")
+            RemoteIdentity.configure(vendorID: nil, productID: nil)
+            expect(RemoteIdentity.vendorID == 0x2717 && RemoteIdentity.productID == 0x32B8,
+                   "VID/PID 配置缺省回落内置默认")
+        }
+
+        // CZ-3. 终端白名单可追加：配置项与内置列表合并，互不覆盖。
+        do {
+            FocusInput.extraTerminalBundles = ["com.example.myterm"]
+            expect(FocusInput.isTerminalApp("com.example.myterm")
+                   && FocusInput.isTerminalApp("com.apple.Terminal")
+                   && !FocusInput.isTerminalApp("com.google.Chrome"),
+                   "终端白名单配置追加生效且内置列表保留")
+            FocusInput.extraTerminalBundles = []
+        }
+
+        // CZ-4. 语音触发三级合并：CLI 覆盖 配置(voiceProfiles.global) 覆盖 内置默认。
+        do {
+            let d = AppServices.startupVoiceTriggerConfig(globalRule: nil, cliKey: nil, cliMode: nil, cliIME: nil)
+            expect(d == VoiceTriggerConfig(), "无配置无 CLI = 内置默认（右Option/hold/豆包）")
+            let rule = VoiceTriggerRule(keyName: "fn", mode: "tap", imeBundlePrefix: "com.example.ime")
+            let c = AppServices.startupVoiceTriggerConfig(globalRule: rule, cliKey: nil, cliMode: nil, cliIME: nil)
+            expect(c.keyName == "fn" && c.mode == .tap && c.imeBundlePrefix == "com.example.ime",
+                   "配置 global 规则覆盖内置默认")
+            let cli = AppServices.startupVoiceTriggerConfig(
+                globalRule: rule, cliKey: "f13", cliMode: "double", cliIME: .some(nil))
+            expect(cli.keyName == "f13" && cli.mode == .double && cli.imeBundlePrefix == nil,
+                   "CLI 三件套覆盖配置（--ime none → 不切输入法）")
+            let bad = AppServices.startupVoiceTriggerConfig(
+                globalRule: rule, cliKey: "no_such_key", cliMode: "no_such_mode", cliIME: nil)
+            expect(bad.keyName == "fn" && bad.mode == .tap, "CLI 坏值安全回落配置值")
+        }
+
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")
         return failures == 0 ? 0 : 1
     }

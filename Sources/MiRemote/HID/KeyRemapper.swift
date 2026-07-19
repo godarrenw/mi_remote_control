@@ -83,7 +83,7 @@ enum KeyRemapper {
 
     // MARK: - hidutil 调用（install/uninstall/reinstall 可能来自不同线程，串行化）
 
-    private static let matching = #"{"VendorID":0x2717,"ProductID":0x32B8}"#
+    private static var matching: String { RemoteIdentity.hidutilMatching }
     private static let hidutilLock = NSLock()
     /// install 前保存的设备原有映射（已剔除本进程自己的中转条目）。
     /// nil = 尚未成功读取（uninstall 按现状写空映射）。

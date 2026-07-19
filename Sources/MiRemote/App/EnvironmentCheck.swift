@@ -84,7 +84,8 @@ enum EnvironmentCheck {
     /// 注意：只 create + setDeviceMatching + copyDevices，**不调用 IOHIDManagerOpen**——
     /// 枚举 device set 不需要 open，open 会触发输入监控权限判定且可能与
     /// 主 HIDEngine 的会话相互干扰。用完即弃（ARC 释放，无需 close）。
-    static func remoteConnected(vendorID: Int = 0x2717, productID: Int = 0x32B8) -> EnvCheckResult {
+    static func remoteConnected(vendorID: Int = RemoteIdentity.vendorID,
+                                productID: Int = RemoteIdentity.productID) -> EnvCheckResult {
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         IOHIDManagerSetDeviceMatching(manager, [
             kIOHIDVendorIDKey as String: vendorID,

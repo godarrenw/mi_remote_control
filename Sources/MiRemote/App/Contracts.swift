@@ -2,6 +2,30 @@ import Foundation
 
 // 模块间契约。并行开发的各模块严格遵守此文件签名，不得改动。
 
+/// 遥控器 USB 识别信息（可在 config.json settings 里覆盖，换其他型号遥控器用）。
+/// 默认 = 小米蓝牙遥控器 2 Pro。启动早期由 AppServices 按配置 configure 一次，
+/// 之后 HIDEngine / KeyRemapper / EnvironmentCheck 只读——无并发写。
+enum RemoteIdentity {
+    static let defaultVendorID  = 0x2717
+    static let defaultProductID = 0x32B8
+
+    nonisolated(unsafe) private(set) static var vendorID  = defaultVendorID
+    nonisolated(unsafe) private(set) static var productID = defaultProductID
+
+    static func configure(vendorID: Int?, productID: Int?) {
+        self.vendorID  = vendorID  ?? defaultVendorID
+        self.productID = productID ?? defaultProductID
+    }
+
+    /// hidutil --matching 串（纯函数，供自测）。与 VID/PID 始终同步生成。
+    static func hidutilMatching(vendorID: Int, productID: Int) -> String {
+        "{\"VendorID\":\(String(format: "0x%X", vendorID)),\"ProductID\":\(String(format: "0x%X", productID))}"
+    }
+    static var hidutilMatching: String {
+        hidutilMatching(vendorID: vendorID, productID: productID)
+    }
+}
+
 enum ATVVUUID {
     static let service = "AB5E0001-5A21-4F05-BC7D-AF01F617B664"
     static let tx      = "AB5E0002-5A21-4F05-BC7D-AF01F617B664" // 主机写命令
@@ -175,6 +199,16 @@ struct MappingConfig: Codable {
         /// 基础文字输入态下，长按返回/删除是否执行“全选并删除”。nil 与 false 等价，
         /// 使用 Optional 以兼容旧版 config.json 的自动解码。
         var deleteAllOnHold: Bool? = nil
+        // —— 以下均为可选覆盖项（nil = 内置默认），旧配置无这些字段照常解码 ——
+        /// 遥控器 USB Vendor ID（nil = 0x2717 小米）。换其他遥控器型号时改。
+        var remoteVendorID: Int? = nil
+        /// 遥控器 USB Product ID（nil = 0x32B8 小米蓝牙遥控器 2 Pro）。
+        var remoteProductID: Int? = nil
+        /// 语音输出虚拟声卡名（前缀匹配；nil = "BlackHole 2ch"）。
+        /// 同时用于语音会话期间的默认麦克风切换目标。
+        var voiceOutputDevice: String? = nil
+        /// 追加的终端类 App bundle id（focus_input 一级兜底白名单，与内置列表合并）。
+        var terminalApps: [String]? = nil
     }
     var version: Int = currentVersion
     var settings: Settings = Settings()

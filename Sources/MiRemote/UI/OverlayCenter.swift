@@ -386,6 +386,8 @@ private struct OverlayBackdrop<Content: View>: View {
     let onDismiss: () -> Void
     @ViewBuilder let content: () -> Content
 
+    @State private var appeared = false
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.001)
@@ -393,8 +395,11 @@ private struct OverlayBackdrop<Content: View>: View {
                 .contentShape(Rectangle())
                 .onTapGesture { onDismiss() }
             content()
+                .scaleEffect(appeared ? 1 : 0.96)
+                .opacity(appeared ? 1 : 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear { withAnimation(Motion.overlay) { appeared = true } }
     }
 }
 
@@ -458,16 +463,17 @@ private struct WindowPickerView: View {
                 .multilineTextAlignment(.center)
                 .frame(width: 120)
             Text(entry.appName)
-                .font(.system(size: 9))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
         .padding(10)
         .background(Color(nsColor: .controlBackgroundColor).opacity(isSelected ? 1 : 0.55),
-                    in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12)
+                    in: RoundedRectangle(cornerRadius: Radius.hud))
+        .overlay(RoundedRectangle(cornerRadius: Radius.hud)
             .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 2.5))
-        .shadow(color: isSelected ? Color.accentColor.opacity(0.5) : .clear, radius: 5)
+        .shadow(color: isSelected ? Color.accentColor.opacity(0.5) : .clear, radius: 6)
+        .scaleEffect(isSelected ? 1.06 : 1)
     }
 
     @ViewBuilder private func appIcon(_ bundleID: String?) -> some View {
@@ -507,6 +513,8 @@ private struct SystemMenuView: View {
                         in: RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10)
                         .stroke(index == selected ? Color.accentColor : .clear, lineWidth: 2.5))
+                    .shadow(color: index == selected ? Color.accentColor.opacity(0.4) : .clear, radius: 6)
+                    .scaleEffect(index == selected ? 1.06 : 1)
                 }
             }
         }

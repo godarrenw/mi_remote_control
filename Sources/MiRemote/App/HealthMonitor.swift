@@ -313,7 +313,7 @@ final class HealthMonitor: @unchecked Sendable {
         items.append(bh.state == .granted
             ? RepairItem(name: "BlackHole 声卡驱动", status: .ok, message: "已安装", guideURL: nil)
             : RepairItem(name: "BlackHole 声卡驱动", status: .needsUser,
-                         message: "未安装。语音出字功能需要，请到官网下载 BlackHole 2ch 安装",
+                         message: "未安装。仅语音出字功能需要（按键映射不受影响），请到官网下载 BlackHole 2ch 安装",
                          guideURL: bh.guideURL))
 
         // hidutil 残留/在位：运行中且 tap 存活 → 映射在用，做「在位校验」（缺失触发重装）；

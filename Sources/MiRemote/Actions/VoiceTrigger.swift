@@ -77,7 +77,9 @@ enum VoiceTrigger {
         guard let prefix = config.imeBundlePrefix else { return }
         let didSwitch = onMain {
             guard let target = findInputSource(bundlePrefix: prefix) else {
-                FileHandle.standardError.write("未找到目标输入法（\(prefix)*）\n".data(using: .utf8)!)
+                let hint = "未找到目标输入法（\(prefix)*），跳过切换、触发键照常发送。可在 config.json 的 "
+                    + "voiceProfiles.global.imeBundlePrefix 改成你的语音输入法前缀；独立语音 App 设为 null\n"
+                FileHandle.standardError.write(hint.data(using: .utf8)!)
                 return false
             }
             if savedInputSource == nil {

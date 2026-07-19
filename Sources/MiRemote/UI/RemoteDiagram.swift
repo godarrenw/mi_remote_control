@@ -178,6 +178,9 @@ struct RemoteDiagram: View {
                 // 方向段：默认灰点，选中蓝弧+蓝点+发光
                 for dir in [RemoteKey.up, .right, .down, .left] {
                     let hi = highlighted(dir)
+                    if hi, let sector = G.sectorPath(dir) {
+                        ctx.fill(sector, with: .color(Color.accentColor.opacity(0.18)))
+                    }
                     if let dot = G.sectorDot[dir] {
                         let dotPath = Path(ellipseIn: CGRect(x: dot.x - 3, y: dot.y - 3, width: 6, height: 6))
                         ctx.fill(dotPath, with: .color(hi ? Color.accentColor : Color(white: 0.43)))
@@ -187,8 +190,8 @@ struct RemoteDiagram: View {
                         arc.addArc(center: G.ringCenter, radius: G.ringOuter - 1.5,
                                    startAngle: .degrees(start + 4), endAngle: .degrees(end - 4), clockwise: false)
                         var glow = ctx
-                        glow.addFilter(.shadow(color: Color.accentColor.opacity(0.6), radius: 3))
-                        glow.stroke(arc, with: .color(Color.accentColor), lineWidth: 2.5)
+                        glow.addFilter(.shadow(color: Color.accentColor.opacity(0.6), radius: 4))
+                        glow.stroke(arc, with: .color(Color.accentColor), lineWidth: 2)
                     }
                 }
 
@@ -198,11 +201,12 @@ struct RemoteDiagram: View {
                 let ok = Path(ellipseIn: okRect)
                 ctx.fill(ok, with: .color(.black))
                 if highlighted(.ok) {
+                    ctx.fill(ok, with: .color(Color.accentColor.opacity(0.22)))
                     var glow = ctx
-                    glow.addFilter(.shadow(color: Color.accentColor.opacity(0.6), radius: 3))
+                    glow.addFilter(.shadow(color: Color.accentColor.opacity(0.6), radius: 4))
                     glow.stroke(ok, with: .color(Color.accentColor), lineWidth: 2)
                 } else {
-                    ctx.stroke(ok, with: .color(Color(white: 0.23)), lineWidth: 1)
+                    ctx.stroke(ok, with: .color(Color(white: 0.3)), lineWidth: 1)
                 }
 
                 // 独立圆键
@@ -211,8 +215,9 @@ struct RemoteDiagram: View {
                     let path = Path(ellipseIn: rect)
                     ctx.fill(path, with: .color(keyFace))
                     if highlighted(key) {
+                        ctx.fill(path, with: .color(Color.accentColor.opacity(0.22)))
                         var glow = ctx
-                        glow.addFilter(.shadow(color: Color.accentColor.opacity(0.6), radius: 3))
+                        glow.addFilter(.shadow(color: Color.accentColor.opacity(0.6), radius: 4))
                         glow.stroke(path, with: .color(Color.accentColor), lineWidth: 2)
                     }
                 }
@@ -230,8 +235,11 @@ struct RemoteDiagram: View {
                         let corners: Path = key == .volUp
                             ? partialCapsule(half, roundTop: true)
                             : partialCapsule(half, roundTop: false)
+                        var fillHalf = corners
+                        fillHalf.closeSubpath()
+                        ctx.fill(fillHalf, with: .color(Color.accentColor.opacity(0.22)))
                         var glow = ctx
-                        glow.addFilter(.shadow(color: Color.accentColor.opacity(0.6), radius: 3))
+                        glow.addFilter(.shadow(color: Color.accentColor.opacity(0.6), radius: 4))
                         glow.stroke(corners, with: .color(Color.accentColor), lineWidth: 2)
                     }
                 }

@@ -31,6 +31,12 @@ enum ConfigStore {
         return try? JSONDecoder().decode(MappingConfig.self, from: data)
     }
 
+    /// 只读加载（文件不存在或解析失败返回 nil，绝不创建文件）。
+    /// 启动早期读 settings（遥控器 VID/PID、声卡名等）用——语音-only 模式不应因此落盘配置。
+    static func loadIfExists(at path: String?) -> MappingConfig? {
+        load(from: path.map { URL(fileURLWithPath: $0) } ?? defaultURL())
+    }
+
     /// 写配置（pretty + sortedKeys，便于用户手改与 diff）。
     @discardableResult
     static func save(_ config: MappingConfig, to url: URL) -> Bool {
@@ -235,12 +241,17 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
     /// GUI 注入：在一次语音会话开始时，按最近的前台 App 解析快捷键。
     var resolveTriggerConfig: (() -> VoiceTriggerConfig)?
 
+    /// 语音会话期间默认麦克风的切换目标（前缀匹配；默认 BlackHole，配置可换）。
+    private let micDeviceName: String
+
     init(outputName: String?, wavPath: String?, gainDB: Double, verbose: Bool,
-         switchInput: Bool, doubao: Bool, extraSink: PCMSink? = nil) {
+         switchInput: Bool, doubao: Bool, micDeviceName: String = "BlackHole",
+         extraSink: PCMSink? = nil) {
         self.post = PCMPostprocessor(gainDB: gainDB)
         self.verbose = verbose
         self.switchInput = switchInput
         self.doubao = doubao
+        self.micDeviceName = micDeviceName
         var sinks: [PCMSink] = [AudioBridge(deviceName: outputName)]
         if let wavPath {
             sinks.append(WAVSink(url: URL(fileURLWithPath: wavPath)))
@@ -270,7 +281,9 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         restoreWork?.cancel()
         restoreWork = nil
         if switchInput {
-            log(DefaultInput.engage(deviceName: "BlackHole") ? "默认麦克风 → BlackHole" : "切换默认麦克风失败")
+            log(DefaultInput.engage(deviceName: micDeviceName)
+                ? "默认麦克风 → \(micDeviceName)"
+                : "切换默认麦克风失败（未找到 \(micDeviceName)*，未装虚拟声卡？语音出字不可用，按键功能不受影响）")
         }
         // 抖动幽灵会话（有 START/STOP 但零音频帧）不触发语音工具：
         // 等第一个音频帧到达再触发，幽灵会话就永远碰不到豆包。
@@ -465,6 +478,13 @@ final class AppServices {
 
     struct Options {
         var outputName: String? = "BlackHole 2ch"
+        /// CLI --output 显式给过（显式值优先于 config settings.voiceOutputDevice）。
+        var outputExplicit = false
+        /// CLI --trigger-key/--trigger-mode/--ime 的覆盖记录（nil=未给 → 用配置或内置默认）。
+        var cliTriggerKey: String?
+        var cliTriggerMode: String?
+        var cliIMEGiven = false
+        var cliIME: String?
         var wavPath: String?
         var gainDB: Double = 0
         var verbose = false
@@ -491,7 +511,35 @@ final class AppServices {
     private(set) var started = false
     private let voiceRuleStore = VoiceRuleStore()
 
+    /// 启动期语音触发三级合并（纯函数，供自测）：内置默认 ← 配置 global 规则 ← CLI 标志。
+    /// cliIME 双层 Optional：nil=CLI 未给；.some(nil)=--ime none（不切输入法）；.some(v)=指定前缀。
+    static func startupVoiceTriggerConfig(globalRule: VoiceTriggerRule?,
+                                          cliKey: String?, cliMode: String?,
+                                          cliIME: String??) -> VoiceTriggerConfig {
+        var cfg = VoiceTriggerRouting.resolve(globalRule.map { ["global": $0] }, bundleID: nil)
+        if let cliKey, VoiceTriggerConfig.keyTable[cliKey] != nil { cfg.keyName = cliKey }
+        if let cliMode, let mode = VoiceTriggerConfig.Mode(rawValue: cliMode) { cfg.mode = mode }
+        if let cliIME { cfg.imeBundlePrefix = cliIME }
+        return cfg
+    }
+
     init(options: Options) {
+        // 启动早期只读预载配置：settings 覆盖项（VID/PID、声卡名、终端白名单）
+        // 与 voiceProfiles.global 需要在各引擎构建前生效。文件缺失/坏损 → 全部内置默认。
+        let preloaded = ConfigStore.loadIfExists(at: options.configPath)
+        let settings = preloaded?.settings ?? MappingConfig.Settings()
+        RemoteIdentity.configure(vendorID: settings.remoteVendorID,
+                                 productID: settings.remoteProductID)
+        FocusInput.extraTerminalBundles = Set(settings.terminalApps ?? [])
+        var options = options
+        if !options.outputExplicit, let dev = settings.voiceOutputDevice {
+            options.outputName = dev
+        }
+        VoiceTrigger.config = Self.startupVoiceTriggerConfig(
+            globalRule: preloaded?.voiceProfiles?["global"],
+            cliKey: options.cliTriggerKey,
+            cliMode: options.cliTriggerMode,
+            cliIME: options.cliIMEGiven ? .some(options.cliIME) : nil)
         self.options = options
         voiceApp = VoiceBridgeApp(outputName: options.outputName,
                                   wavPath: options.wavPath,
@@ -499,6 +547,7 @@ final class AppServices {
                                   verbose: options.verbose,
                                   switchInput: options.switchInput,
                                   doubao: options.doubao,
+                                  micDeviceName: settings.voiceOutputDevice ?? "BlackHole",
                                   extraSink: options.levelSink)
         bridge = ATVVBridge(delegate: voiceApp)
         health.log = { log("健康 \($0)") }
@@ -590,7 +639,9 @@ final class AppServices {
     }
 
     /// 热加载映射配置（UI 写回 config.json 后调用）。
+    /// settings 里的 VID/PID、声卡名改动需重启进程生效（引擎构建期绑定）；终端白名单即刻生效。
     func applyConfig(_ config: MappingConfig) {
+        FocusInput.extraTerminalBundles = Set(config.settings.terminalApps ?? [])
         voiceRuleStore.update(config: config)
         keyMapper?.engine.setConfig(config)
     }

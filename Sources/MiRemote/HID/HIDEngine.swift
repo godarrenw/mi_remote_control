@@ -18,8 +18,8 @@ import IOKit.hid
 /// delegate 为 weak 只读。
 final class HIDEngine: @unchecked Sendable {
 
-    private static let vendorID: Int  = 0x2717
-    private static let productID: Int = 0x32B8
+    private static var vendorID: Int  { RemoteIdentity.vendorID }
+    private static var productID: Int { RemoteIdentity.productID }
     private static let keyboardUsagePage: UInt32 = 0x07
     /// 探针发现的噪声元素 usage（-1），需忽略。
     private static let noiseUsage: UInt32 = 0xFFFFFFFF

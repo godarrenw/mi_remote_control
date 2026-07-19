@@ -24,9 +24,13 @@ enum FocusInput {
         "co.zeit.hyper",
     ]
 
+    /// 配置追加的终端 bundle id（settings.terminalApps）。启动/applyConfig 时整体替换，
+    /// 主线程写、动作线程读——String Set 值替换的竞态最多短暂读到旧表，可接受。
+    nonisolated(unsafe) static var extraTerminalBundles: Set<String> = []
+
     static func isTerminalApp(_ bundleID: String?) -> Bool {
         guard let bundleID else { return false }
-        return terminalBundles.contains(bundleID)
+        return terminalBundles.contains(bundleID) || extraTerminalBundles.contains(bundleID)
     }
 
     // MARK: - 入口

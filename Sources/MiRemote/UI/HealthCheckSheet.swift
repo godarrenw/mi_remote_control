@@ -35,12 +35,13 @@ struct HealthCheckSheet: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
             }
 
             // 总结横幅
             if checked {
                 if problems == 0 {
-                    Label("全部正常 ✅", systemImage: "checkmark.seal.fill")
+                    Label("全部正常", systemImage: "checkmark.seal.fill")
                         .font(.callout).foregroundStyle(.green)
                 } else {
                     Label("发现 \(problems) 个问题，按右侧按钮逐项处理", systemImage: "exclamationmark.triangle.fill")
@@ -69,8 +70,8 @@ struct HealthCheckSheet: View {
                 }
             }
             .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.card))
+            .overlay(RoundedRectangle(cornerRadius: Radius.card).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
 
             HStack {
                 Button("重新体检") { runChecks() }
