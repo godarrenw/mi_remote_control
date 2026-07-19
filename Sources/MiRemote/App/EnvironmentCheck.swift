@@ -32,6 +32,13 @@ enum EnvironmentCheck {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"))
     }
 
+    /// 由用户点击授权按钮后调用：让系统登记当前 App 并显示原生辅助功能授权提示。
+    @discardableResult
+    static func requestAccessibility() -> Bool {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
+    }
+
     // MARK: - 输入监控（Input Monitoring）
 
     /// `IOHIDCheckAccess(listenEvent)`：只读查询，不触发授权弹窗。
@@ -47,6 +54,12 @@ enum EnvironmentCheck {
             state: state,
             guideURL: URL(string:
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"))
+    }
+
+    /// 由用户点击授权按钮后调用：请求系统登记输入监控权限。
+    @discardableResult
+    static func requestInputMonitoring() -> Bool {
+        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
     }
 
     // MARK: - BlackHole 虚拟声卡

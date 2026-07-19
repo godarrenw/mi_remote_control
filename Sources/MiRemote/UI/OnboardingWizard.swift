@@ -9,6 +9,7 @@ struct PermissionCheckRow: View {
     var title: String
     var explain: String
     var state: EnvCheckState
+    var waitingForRestart = false
     var actionTitle: String = "去授权"
     var action: (() -> Void)?
 
@@ -25,8 +26,9 @@ struct PermissionCheckRow: View {
                 Label("已授权", systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)
             case .denied:
-                Label("未授权", systemImage: "circle.fill")
-                    .font(.caption).foregroundStyle(.red)
+                Label(waitingForRestart ? "等待重启" : "未授权",
+                      systemImage: waitingForRestart ? "arrow.clockwise.circle.fill" : "circle.fill")
+                    .font(.caption).foregroundStyle(waitingForRestart ? .orange : .red)
                 if let action {
                     Button(actionTitle) { action() }
                         .controlSize(.small)
@@ -59,6 +61,8 @@ struct OnboardingWizard: View {
     @State private var remote: EnvCheckState = .unknown
     @State private var pollTimer: Timer?
     @State private var scanTooLong = false
+    @State private var axRequestOpened = false
+    @State private var imRequestOpened = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -97,8 +101,18 @@ struct OnboardingWizard: View {
 
             HStack {
                 if step > 0 { Button("上一步") { step -= 1 } }
+                Button("退出 App") {
+                    terminateApp(relaunch: false)
+                }
                 Spacer()
                 if step == 0 {
+                    if axRequestOpened || imRequestOpened {
+                        Button("退出并重新打开") {
+                            terminateApp(relaunch: true)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .help("macOS 需要重启 App 才会把新权限应用到输入通道")
+                    }
                     Button("下一步") { step = 1 }
                         .buttonStyle(.borderedProminent)
                         .disabled(!(ax == .granted && im == .granted && bt == .granted))
@@ -125,7 +139,7 @@ struct OnboardingWizard: View {
     private var permissionStep: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("第 1 步 · 授权").font(.title3.bold())
-            Text("MiRemote 需要三项系统权限才能接管遥控器按键。授权后本页会自动打勾。")
+            Text("MiRemote 需要三项系统权限才能接管遥控器按键。输入监控和辅助功能授权后，请点“退出并重新打开”。")
                 .font(.caption).foregroundStyle(.secondary)
             PermissionCheckRow(icon: "antenna.radiowaves.left.and.right", title: "蓝牙",
                                explain: "连接遥控器、接收语音音频",
@@ -135,12 +149,18 @@ struct OnboardingWizard: View {
             }
             PermissionCheckRow(icon: "keyboard", title: "输入监控",
                                explain: "读取遥控器按键事件",
-                               state: im) {
+                               state: im,
+                               waitingForRestart: imRequestOpened && im != .granted) {
+                imRequestOpened = true
+                _ = EnvironmentCheck.requestInputMonitoring()
                 if let url = EnvironmentCheck.inputMonitoring().guideURL { NSWorkspace.shared.open(url) }
             }
             PermissionCheckRow(icon: "accessibility", title: "辅助功能",
                                explain: "把按键翻译成快捷键/系统动作",
-                               state: ax) {
+                               state: ax,
+                               waitingForRestart: axRequestOpened && ax != .granted) {
+                axRequestOpened = true
+                _ = EnvironmentCheck.requestAccessibility()
                 if let url = EnvironmentCheck.accessibility().guideURL { NSWorkspace.shared.open(url) }
             }
             Text("提示：正式签名版正常更新会保留授权；测试版或签名身份变化时可能需要重新授权。")
@@ -241,5 +261,23 @@ struct OnboardingWizard: View {
                 if step == 1 { step = 2 }
             }
         }
+    }
+
+    /// 首启 sheet 期间普通 terminate 会被退出确认/模态层拦住，因此这里先同步清理
+    /// BLE、音频与 hidutil，再直接结束进程。重启用独立 helper 延迟拉起同一 app。
+    private func terminateApp(relaunch: Bool) {
+        model.services?.stop()
+        if relaunch, Bundle.main.bundleURL.pathExtension == "app" {
+            let helper = Process()
+            helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+            helper.arguments = ["-c", "sleep 1; /usr/bin/open \"$1\"", "miremote-relaunch",
+                                Bundle.main.bundleURL.path]
+            do {
+                try helper.run()
+            } catch {
+                log("自动重开失败，请手动重新打开 App：\(error.localizedDescription)")
+            }
+        }
+        exit(EXIT_SUCCESS)
     }
 }
