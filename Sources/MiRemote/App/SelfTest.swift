@@ -196,6 +196,119 @@ enum SelfTest {
         expect(MappingEngine.tapRouteSelfCheck(), "M3 方向键分流快照/判定自测")
         expect(ActionRunner.selfCheck(), "ActionRunner 键表/修饰位自测")
 
+        // M4-1. Action JSON 编解码往返（全部新旧 case）
+        do {
+            let actions: [Action] = [
+                .keyStroke(key: "a", mods: ["left_cmd"]), .system("mute"),
+                .openApp("com.apple.Terminal"), .shell("true"), .voice,
+                .layerMomentary(1), .layerToggle(2), .none,
+                .windowCycle(scope: "app"), .windowCycle(scope: "global"),
+                .tabJump(dir: 1, index: nil), .tabJump(dir: -1, index: nil), .tabJump(dir: nil, index: 3),
+                .focusInput, .mouseMode,
+                .macro(steps: [.action(.keyStroke(key: "return", mods: [])),
+                               .delay(ms: 100), .text("hello 世界"),
+                               .action(.macro(steps: [.text("x")]))]),
+            ]
+            var bad: String? = nil
+            for a in actions {
+                let back = try JSONDecoder().decode(Action.self, from: JSONEncoder().encode(a))
+                if back != a { bad = "\(a)"; break }
+            }
+            expect(bad == nil, "Action JSON 往返", bad ?? "")
+        } catch { expect(false, "Action JSON 往返", "\(error)") }
+
+        // M4-2. 新格式 JSON 字面量解析（scope 省略默认 app；macro 混合步骤）
+        do {
+            let d = JSONDecoder()
+            expect(try d.decode(Action.self, from: Data(#"{"type":"window_cycle"}"#.utf8))
+                       == .windowCycle(scope: "app"), "window_cycle 无 scope 默认 app")
+            expect(try d.decode(Action.self, from: Data(#"{"type":"tab_jump","index":2}"#.utf8))
+                       == .tabJump(dir: nil, index: 2), "tab_jump index 模式解析")
+            let macroJSON = #"{"type":"macro","steps":[{"type":"focus_input"},{"type":"delay","ms":50},{"type":"text","value":"hi"},{"type":"key_stroke","key":"return"}]}"#
+            expect(try d.decode(Action.self, from: Data(macroJSON.utf8))
+                       == .macro(steps: [.action(.focusInput), .delay(ms: 50), .text("hi"),
+                                         .action(.keyStroke(key: "return", mods: []))]),
+                   "macro 混合步骤 JSON 解析")
+        } catch { expect(false, "M4 新格式 JSON 解析", "\(error)") }
+
+        // M4-3. 旧配置 JSON 向后兼容（M2 生成的 config.json 结构原样解析）
+        do {
+            let legacy = #"""
+            {"version":1,"settings":{"holdMs":350,"doubleMs":0},"profiles":{"global":{
+              "ok":{"tap":{"type":"key_stroke","key":"return","mods":[]}},
+              "menu":{"tap":{"type":"system","value":"mission_control"}},
+              "tv":{"tap":{"type":"open_app","value":"com.apple.systempreferences"}},
+              "voice":{"tap":{"type":"voice"}}}}}
+            """#
+            let cfg = try JSONDecoder().decode(MappingConfig.self, from: Data(legacy.utf8))
+            expect(cfg.profiles["global"]?["ok"]?.tap == .keyStroke(key: "return", mods: [])
+                   && cfg.profiles["global"]?["menu"]?.tap == .system("mission_control")
+                   && cfg.profiles["global"]?["voice"]?.tap == .voice,
+                   "旧配置 JSON 向后兼容")
+        } catch { expect(false, "旧配置 JSON 向后兼容", "\(error)") }
+
+        // M4-4. Macro 步骤序列纯逻辑（假 primitives 记录顺序与延时；嵌套限深 1 层）
+        do {
+            final class Recorder: MacroPrimitives {
+                var log: [String] = []
+                func perform(_ action: Action) { log.append("act(\(actionTag(action)))") }
+                func typeText(_ text: String) { log.append("text(\(text))") }
+                func wait(ms: Int) { log.append("wait(\(ms))") }
+                private func actionTag(_ a: Action) -> String {
+                    if case .keyStroke(let k, _) = a { return k }
+                    return "?"
+                }
+            }
+            let steps: [MacroStep] = [
+                .action(.keyStroke(key: "a", mods: [])),
+                .delay(ms: 50),
+                .text("hi"),
+                .action(.macro(steps: [.text("in"),
+                                       .action(.macro(steps: [.text("deep")]))])), // 第 2 层应被忽略
+            ]
+            let rec = Recorder()
+            MacroEngine.execute(steps, primitives: rec, depth: 0)
+            expect(rec.log == ["act(a)", "wait(20)", "wait(50)", "wait(20)", "text(hi)",
+                               "wait(20)", "text(in)", "wait(20)"],
+                   "Macro 步骤顺序/间隔/嵌套限深", "\(rec.log)")
+        }
+
+        // M4-5. MouseMode 加速曲线纯函数
+        expect(MouseMode.speed(afterSeconds: 0) == 4.0, "MouseMode 初速 4px/tick")
+        expect(abs(MouseMode.speed(afterSeconds: 0.75) - 22.0) < 0.001, "MouseMode 中点 22px/tick")
+        expect(MouseMode.speed(afterSeconds: 1.5) == 40.0, "MouseMode 1.5s 满速 40px/tick")
+        expect(MouseMode.speed(afterSeconds: 10) == 40.0, "MouseMode 满速封顶")
+        expect(MouseMode.speed(afterSeconds: -1) == 4.0, "MouseMode 负时长取初速")
+
+        // M4-6. MouseMode 方向向量（对角线/相消）
+        do {
+            let d1 = MouseMode.delta(dirs: [.up, .right], speed: 10)
+            expect(d1.dx == 10 && d1.dy == -10, "MouseMode 对角线向量")
+            let d2 = MouseMode.delta(dirs: [.left, .right], speed: 10)
+            expect(d2.dx == 0 && d2.dy == 0, "MouseMode 反向相消")
+        }
+
+        // M4-7. FocusInput 终端白名单判定
+        expect(FocusInput.isTerminalApp("com.mitchellh.ghostty")
+               && FocusInput.isTerminalApp("com.apple.Terminal")
+               && FocusInput.isTerminalApp("com.googlecode.iterm2"), "FocusInput 终端白名单命中")
+        expect(!FocusInput.isTerminalApp("com.google.Chrome")
+               && !FocusInput.isTerminalApp(nil), "FocusInput 非终端/空 bundle 判非")
+
+        // M4-8. WindowSwitcher 纯逻辑（循环下标 + 全局目标挑选）
+        expect(WindowSwitcher.nextIndex(after: 0, count: 3) == 1
+               && WindowSwitcher.nextIndex(after: 2, count: 3) == 0
+               && WindowSwitcher.nextIndex(after: 5, count: 0) == 0, "WindowSwitcher 循环下标")
+        do {
+            typealias W = WindowSwitcher.WindowInfo
+            let wins = [W(pid: 1, windowID: 11, title: "front"),
+                        W(pid: 2, windowID: 22, title: ""),
+                        W(pid: 3, windowID: 33, title: "titled")]
+            expect(WindowSwitcher.pickGlobalTarget(wins)?.windowID == 33, "全局切换有标题优先")
+            expect(WindowSwitcher.pickGlobalTarget([wins[0], wins[1]])?.windowID == 22, "全局切换无标题兜底")
+            expect(WindowSwitcher.pickGlobalTarget([wins[0]]) == nil, "单窗口不切换")
+        }
+
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")
         return failures == 0 ? 0 : 1
     }

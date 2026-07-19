@@ -54,6 +54,12 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
         case .system(let name):             system(name)
         case .openApp(let bundle):          openApp(bundle)
         case .shell(let cmd):               shell(cmd)
+        // M4 高级动作
+        case .windowCycle(let scope):       WindowSwitcher.cycle(scope: scope)
+        case .tabJump(let dir, let index):  tabJump(dir: dir, index: index)
+        case .focusInput:                   FocusInput.perform()
+        case .mouseMode:                    MouseMode.shared.toggle()
+        case .macro(let steps):             MacroEngine.shared.run(steps, runner: self)
         case .voice, .layerMomentary, .layerToggle, .none:
             // 这些由 MappingEngine / ATVV 侧处理，ActionRunner 忽略。
             log("ignore action handled elsewhere: \(action)")
@@ -118,6 +124,22 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
             synth(keyCode: 21, deviceBit: 0x08 | 0x02, mask: [.maskCommand, .maskShift]) // 4
         default:
             log("unknown system action: \(name)")
+        }
+    }
+
+    // MARK: - tab_jump（DESIGN §4.3：Ghostty/浏览器/VS Code 通吃）
+    /// index 模式：cmd+数字 直跳第 N 标签（1-9）；dir 模式：cmd+shift+[/] 相对切换。
+    private func tabJump(dir: Int?, index: Int?) {
+        if let index {
+            guard (1...9).contains(index), let code = Self.keyCodes["\(index)"] else {
+                log("tab_jump index 超范围(1-9): \(index)"); return
+            }
+            synth(keyCode: code, deviceBit: 0x08, mask: .maskCommand)                    // cmd+数字
+        } else if let dir {
+            let bracket = Self.keyCodes[dir >= 0 ? "right_bracket" : "left_bracket"]!
+            synth(keyCode: bracket, deviceBit: 0x08 | 0x02, mask: [.maskCommand, .maskShift]) // cmd+shift+[/]
+        } else {
+            log("tab_jump 缺少 dir/index 参数")
         }
     }
 
