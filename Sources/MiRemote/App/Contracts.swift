@@ -56,9 +56,15 @@ enum Action: Codable, Equatable {
     case voice                                    // 语音键行为（ATVV 侧处理，映射层放行）
     case layerMomentary(Int)
     case layerToggle(Int)
+    // M4 高级动作
+    case windowCycle(scope: String)               // "app"=同应用窗口循环（默认）/ "global"=全局 MRU 循环
+    case tabJump(dir: Int?, index: Int?)          // dir=±1 相对切标签(cmd+shift+[/]) / index=N 直跳(cmd+数字)
+    case focusInput                               // 自动聚焦前台 app 输入框（三级兜底）
+    case mouseMode                                // toggle 进入/退出鼠标模式
+    case macro(steps: [MacroStep])                // 多步序列
     case none
 
-    private enum K: String, CodingKey { case type, key, mods, value }
+    private enum K: String, CodingKey { case type, key, mods, value, scope, dir, index, steps }
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .type) {
@@ -70,6 +76,12 @@ enum Action: Codable, Equatable {
         case "voice":      self = .voice
         case "layer_momentary": self = .layerMomentary(try c.decode(Int.self, forKey: .value))
         case "layer_toggle":    self = .layerToggle(try c.decode(Int.self, forKey: .value))
+        case "window_cycle": self = .windowCycle(scope: try c.decodeIfPresent(String.self, forKey: .scope) ?? "app")
+        case "tab_jump":     self = .tabJump(dir: try c.decodeIfPresent(Int.self, forKey: .dir),
+                                             index: try c.decodeIfPresent(Int.self, forKey: .index))
+        case "focus_input":  self = .focusInput
+        case "mouse_mode":   self = .mouseMode
+        case "macro":        self = .macro(steps: try c.decodeIfPresent([MacroStep].self, forKey: .steps) ?? [])
         default:           self = .none
         }
     }
@@ -83,7 +95,44 @@ enum Action: Codable, Equatable {
         case .voice:            try c.encode("voice", forKey: .type)
         case .layerMomentary(let v): try c.encode("layer_momentary", forKey: .type); try c.encode(v, forKey: .value)
         case .layerToggle(let v):    try c.encode("layer_toggle", forKey: .type); try c.encode(v, forKey: .value)
+        case .windowCycle(let scope): try c.encode("window_cycle", forKey: .type); try c.encode(scope, forKey: .scope)
+        case .tabJump(let dir, let index):
+            try c.encode("tab_jump", forKey: .type)
+            try c.encodeIfPresent(dir, forKey: .dir)
+            try c.encodeIfPresent(index, forKey: .index)
+        case .focusInput:       try c.encode("focus_input", forKey: .type)
+        case .mouseMode:        try c.encode("mouse_mode", forKey: .type)
+        case .macro(let steps): try c.encode("macro", forKey: .type); try c.encode(steps, forKey: .steps)
         case .none:             try c.encode("none", forKey: .type)
+        }
+    }
+}
+
+/// 宏步骤：任意动作 / 延时 / 文本输入。JSON 里 delay/text 用专属 type，其余按 Action 解析。
+///   {"type":"delay","ms":100}  {"type":"text","value":"hello"}  {"type":"key_stroke","key":"return"}
+enum MacroStep: Codable, Equatable {
+    case action(Action)
+    case delay(ms: Int)
+    case text(String)
+
+    private enum K: String, CodingKey { case type, ms, value }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        switch try c.decode(String.self, forKey: .type) {
+        case "delay": self = .delay(ms: try c.decode(Int.self, forKey: .ms))
+        case "text":  self = .text(try c.decode(String.self, forKey: .value))
+        default:      self = .action(try Action(from: d))
+        }
+    }
+    func encode(to e: Encoder) throws {
+        switch self {
+        case .action(let a): try a.encode(to: e)
+        case .delay(let ms):
+            var c = e.container(keyedBy: K.self)
+            try c.encode("delay", forKey: .type); try c.encode(ms, forKey: .ms)
+        case .text(let s):
+            var c = e.container(keyedBy: K.self)
+            try c.encode("text", forKey: .type); try c.encode(s, forKey: .value)
         }
     }
 }

@@ -46,8 +46,26 @@ while let a = args.first {
             let v = args.removeFirst()
             VoiceTrigger.config.imeBundlePrefix = (v == "none") ? nil : v
         }
+    case "--run-action":
+        // M4 冒烟测试：解析单个 Action JSON → 执行 → 1 秒后退出（无遥控器也能验证动作管道）。
+        guard !args.isEmpty else {
+            FileHandle.standardError.write("--run-action 需要一个 JSON 参数\n".data(using: .utf8)!)
+            exit(2)
+        }
+        let json = args.removeFirst()
+        do {
+            let action = try JSONDecoder().decode(Action.self, from: Data(json.utf8))
+            FileHandle.standardError.write("执行动作: \(action)\n".data(using: .utf8)!)
+            ActionRunner().run(action)
+        } catch {
+            FileHandle.standardError.write("动作 JSON 解析失败: \(error)\n".data(using: .utf8)!)
+            exit(2)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(0) }
+        RunLoop.main.run()
     case "--help", "-h":
         print("miremote [--list-audio-devices] [--output <name>] [--wav <path>] [--gain <dB>] [--verbose]")
+        print("         [--keys] [--config <path>] [--doubao] [--run-action '<action json>']")
         exit(0)
     default:
         FileHandle.standardError.write("未知参数: \(a)\n".data(using: .utf8)!)
