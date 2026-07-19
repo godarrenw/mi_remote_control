@@ -6,8 +6,9 @@ import Combine
 //
 // 左键点击 = SwiftUI 状态面板（NSPopover）；右键 / Option+左键 = 传统 NSMenu 兜底。
 // 图标为模板图（单色随系统着色），6 态用着色/透明度/角标短名表达而不换整图；
-// autosaveName 固定，用户 Cmd+拖走后 isVisible 持久为 false——此时零打扰
-// （双击 .app 与遥控功能菜单「打开 MiRemote 设置」是天然兜底），通用页开关可恢复。
+// autosaveName 固定以保留排序；“显示菜单栏图标”偏好是可见性权威数据源。
+// 用户 Cmd+拖走可在当前会话隐藏，但下次启动（或开关重开）会按偏好恢复，
+// 避免旧 autosave 的 false 让图标永久消失。
 
 @MainActor
 final class StatusItemController: NSObject, NSPopoverDelegate {
@@ -53,6 +54,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             item.autosaveName = "com.miremote.statusitem"
             item.behavior = .removalAllowed
+            // 设置 autosaveName 后系统会读取历史 isVisible；显式覆盖为偏好值。
+            item.isVisible = true
             if let button = item.button {
                 button.target = self
                 button.action = #selector(statusItemClicked(_:))

@@ -24,7 +24,7 @@ struct GeneralPage: View {
                     }
                     RowDivider()
                     SettingsRow(icon: "menubar.rectangle", title: "显示菜单栏图标",
-                                subtitle: "关闭或被拖出菜单栏后，双击应用图标或用遥控功能菜单「打开 MiRemote 设置」进入") {
+                                subtitle: "开启后每次启动都会恢复图标；无需单独系统授权") {
                         Toggle("", isOn: $model.showStatusItem)
                             .toggleStyle(.switch)
                             .labelsHidden()
