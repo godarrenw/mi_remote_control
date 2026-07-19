@@ -22,6 +22,15 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private let audioUUID   = CBUUID(string: ATVVUUID.audio)
     private let controlUUID = CBUUID(string: ATVVUUID.control)
 
+    // MARK: - 电池服务（M5 UI 电量显示；与 ATVV 语音状态机完全独立）
+
+    private let batteryServiceUUID = CBUUID(string: "180F")
+    private let batteryLevelUUID   = CBUUID(string: "2A19")
+    /// 最近读到的电量（0-100）。ATVV 队列写，读方通过 onBatteryLevel 回调获取。
+    private(set) var batteryPercent: Int?
+    /// 电量更新回调（在 ATVV 队列上触发，消费方自行切主线程）。
+    var onBatteryLevel: ((Int) -> Void)?
+
     // MARK: - 命令字节
 
     private static let getCaps: [UInt8] = [0x0A, 0x01, 0x00, 0x00, 0x03, 0x03]
@@ -248,7 +257,8 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         reconnectAttempt = 0
         log("CONNECTED name=\(peripheral.name ?? "?")")
         delegate?.atvvConnected(deviceName: peripheral.name ?? "MI RC")
-        peripheral.discoverServices([serviceUUID])
+        // 同时发现 ATVV 与标准电池服务；电池纯只读旁路，不参与握手状态机。
+        peripheral.discoverServices([serviceUUID, batteryServiceUUID])
     }
 
     func centralManager(_ central: CBCentralManager,
@@ -302,6 +312,10 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
         log("ATVV_SERVICE_FOUND")
         peripheral.discoverCharacteristics([txUUID, audioUUID, controlUUID], for: service)
+        // 电池服务（可选，缺失不影响语音链路）。
+        if let batt = peripheral.services?.first(where: { $0.uuid == batteryServiceUUID }) {
+            peripheral.discoverCharacteristics([batteryLevelUUID], for: batt)
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral,
@@ -310,6 +324,15 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         guard isCurrent(peripheral) else { return }
         if let error {
             log("CHAR_DISCOVERY_ERROR \(error.localizedDescription)")
+            return
+        }
+        // 电池服务分支：读一次 + 订阅 notify 后即返回，绝不进入下方 ATVV 特征齐备校验。
+        if service.uuid == batteryServiceUUID {
+            if let c = service.characteristics?.first(where: { $0.uuid == batteryLevelUUID }) {
+                peripheral.readValue(for: c)
+                peripheral.setNotifyValue(true, for: c)
+                log("BATTERY_CHAR_FOUND")
+            }
             return
         }
         for c in service.characteristics ?? [] {
@@ -362,6 +385,13 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         switch characteristic.uuid {
         case controlUUID: handleControl(data)
         case audioUUID:   handleAudio(data)
+        case batteryLevelUUID:
+            if let b = data.first {
+                let pct = Int(min(b, 100))
+                batteryPercent = pct
+                log("BATTERY \(pct)%")
+                onBatteryLevel?(pct)
+            }
         default: break
         }
     }

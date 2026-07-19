@@ -1,83 +1,87 @@
 import Foundation
 import AppKit
 
-// M1 CLI：遥控器语音 → ATVV → ADPCM 解码 → BlackHole/WAV
-// 用法: miremote [--list-audio-devices] [--output <设备名>] [--wav <路径>] [--gain <dB>] [--verbose]
+// MiRemote 入口。
+// - 纯 CLI 子命令直接执行后退出，不创建 NSApplication。
+// - 显式服务参数保持原 CLI 行为。
+// - 无参数（或 --ui-preview）进入 SwiftUI App。
 
-// 单实例锁：最早执行，防双开（两份 hidutil/tap 互踩状态）。flock 随进程退出（含 kill -9）自动释放。
+// 两份进程会同时争用 hidutil / CGEventTap，因此所有模式都先获取单实例锁。
 if !HealthMonitor.acquireSingleInstanceLock() {
     print("已有实例在运行（锁文件 \(HealthMonitor.lockFilePath())），本次启动退出。")
     exit(1)
 }
 
-func ts() -> String {
-    let f = DateFormatter()
-    f.dateFormat = "HH:mm:ss.SSS"
-    return f.string(from: Date())
-}
-
-var outputName: String? = "BlackHole 2ch"
-var wavPath: String?
-var gainDB: Double = 0
-var verbose = false
-var switchInputFlag = true
-var doubaoFlag = false
-var keysFlag = false
-var configPath: String?
+var opts = AppServices.Options()
+var cliServiceMode = false
+var uiPreview = false
 
 var args = Array(CommandLine.arguments.dropFirst())
-while let a = args.first {
+while let argument = args.first {
     args.removeFirst()
-    switch a {
+    switch argument {
     case "--list-audio-devices":
         AudioBridge.listOutputDevices().forEach { print($0) }
         exit(0)
     case "--self-test":
         exit(SelfTest.run())
     case "--doctor":
-        // 一键体检与修复（standalone：只读检查 + 异常退出残留清理，不安装新映射）。
-        // M5 的「错误维修」按钮后续调同一 HealthMonitor.runRepair API。
         let report = HealthMonitor.runRepair()
         print("MiRemote 一键体检")
         report.lines().forEach { print($0) }
-        print(report.needsUser ? "—— 存在需要你处理的项，请按上面的指引操作后重跑 --doctor。"
-                               : "—— 全部检查通过。")
+        print(report.needsUser
+              ? "—— 存在需要你处理的项，请按上面的指引操作后重跑 --doctor。"
+              : "—— 全部检查通过。")
         exit(report.exitCode)
     case "--login-item":
-        guard !args.isEmpty, let cmd = LoginItemCommand(rawValue: args.removeFirst()) else {
+        guard !args.isEmpty, let command = LoginItemCommand(rawValue: args.removeFirst()) else {
             FileHandle.standardError.write("--login-item 需要参数 on|off|status\n".data(using: .utf8)!)
             exit(2)
         }
-        let r = LoginItem.run(cmd)
-        print(r.message)
-        exit(r.code)
-    case "--output":  outputName = args.isEmpty ? nil : args.removeFirst()
-    case "--wav":     wavPath = args.isEmpty ? nil : args.removeFirst()
-    case "--gain":    gainDB = Double(args.isEmpty ? "0" : args.removeFirst()) ?? 0
-    case "--verbose": verbose = true
-    case "--no-input-switch": switchInputFlag = false
-    case "--doubao": doubaoFlag = true
-    case "--keys": keysFlag = true
+        let result = LoginItem.run(command)
+        print(result.message)
+        exit(result.code)
+    case "--output":
+        cliServiceMode = true
+        opts.outputName = args.isEmpty ? nil : args.removeFirst()
+    case "--wav":
+        cliServiceMode = true
+        opts.wavPath = args.isEmpty ? nil : args.removeFirst()
+    case "--gain":
+        opts.gainDB = Double(args.isEmpty ? "0" : args.removeFirst()) ?? 0
+    case "--verbose":
+        opts.verbose = true
+    case "--no-input-switch":
+        cliServiceMode = true
+        opts.switchInput = false
+    case "--doubao":
+        cliServiceMode = true
+        opts.doubao = true
+    case "--keys":
+        cliServiceMode = true
+        opts.keys = true
+    case "--ui-preview":
+        uiPreview = true
     case "--config":
-        if !args.isEmpty { configPath = args.removeFirst() }
+        if !args.isEmpty { opts.configPath = args.removeFirst() }
     case "--trigger-key":
         if !args.isEmpty { VoiceTrigger.config.keyName = args.removeFirst() }
     case "--trigger-mode":
-        if !args.isEmpty, let m = VoiceTriggerConfig.Mode(rawValue: args.removeFirst()) { VoiceTrigger.config.mode = m }
+        if !args.isEmpty, let mode = VoiceTriggerConfig.Mode(rawValue: args.removeFirst()) {
+            VoiceTrigger.config.mode = mode
+        }
     case "--ime":
         if !args.isEmpty {
-            let v = args.removeFirst()
-            VoiceTrigger.config.imeBundlePrefix = (v == "none") ? nil : v
+            let value = args.removeFirst()
+            VoiceTrigger.config.imeBundlePrefix = value == "none" ? nil : value
         }
     case "--run-action":
-        // M4 冒烟测试：解析单个 Action JSON → 执行 → 1 秒后退出（无遥控器也能验证动作管道）。
         guard !args.isEmpty else {
             FileHandle.standardError.write("--run-action 需要一个 JSON 参数\n".data(using: .utf8)!)
             exit(2)
         }
-        let json = args.removeFirst()
         do {
-            let action = try JSONDecoder().decode(Action.self, from: Data(json.utf8))
+            let action = try JSONDecoder().decode(Action.self, from: Data(args.removeFirst().utf8))
             FileHandle.standardError.write("执行动作: \(action)\n".data(using: .utf8)!)
             ActionRunner().run(action)
         } catch {
@@ -87,294 +91,37 @@ while let a = args.first {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(0) }
         RunLoop.main.run()
     case "--help", "-h":
+        print("miremote                     GUI 模式（设置窗口 + 引擎）")
+        print("miremote --ui-preview        GUI 但不启动引擎（开发验证）")
         print("miremote [--list-audio-devices] [--output <name>] [--wav <path>] [--gain <dB>] [--verbose]")
         print("         [--keys] [--config <path>] [--doubao] [--run-action '<action json>']")
         print("         [--doctor] [--login-item on|off|status]")
         exit(0)
     default:
-        FileHandle.standardError.write("未知参数: \(a)\n".data(using: .utf8)!)
+        FileHandle.standardError.write("未知参数: \(argument)\n".data(using: .utf8)!)
         exit(2)
     }
 }
 
-func log(_ msg: String) {
-    FileHandle.standardError.write("[\(ts())] \(msg)\n".data(using: .utf8)!)
+// 单独传 --verbose 时沿用旧版 CLI 服务模式。
+if opts.verbose && !uiPreview { cliServiceMode = true }
+
+if cliServiceMode && !uiPreview {
+    let services = AppServices(options: opts)
+    signal(SIGINT, SIG_IGN)
+    let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    sigint.setEventHandler {
+        log("退出中…")
+        services.stop()
+        exit(0)
+    }
+    sigint.resume()
+    services.start()
+    RunLoop.main.run()
+} else {
+    let app = NSApplication.shared
+    let delegate = MainActor.assumeIsolated { GUIAppDelegate(uiPreview: uiPreview) }
+    app.delegate = delegate
+    app.setActivationPolicy(.regular)
+    app.run()
 }
-
-final class VoiceBridgeApp: ATVVBridgeDelegate {
-    private let decoder = ADPCMDecoder()
-    private let post: PCMPostprocessor
-    private let sink: PCMSink
-    private let verbose: Bool
-    private let switchInput: Bool
-    private let doubao: Bool
-
-    init(outputName: String?, wavPath: String?, gainDB: Double, verbose: Bool, switchInput: Bool, doubao: Bool) {
-        self.post = PCMPostprocessor(gainDB: gainDB)
-        self.verbose = verbose
-        self.switchInput = switchInput
-        self.doubao = doubao
-        var sinks: [PCMSink] = [AudioBridge(deviceName: outputName)]
-        if let wavPath {
-            sinks.append(WAVSink(url: URL(fileURLWithPath: wavPath)))
-        }
-        self.sink = sinks.count == 1 ? sinks[0] : TeeSink(sinks)
-    }
-
-    func atvvLog(_ message: String) {
-        if verbose { log(message) }
-    }
-
-    /// BLE 连接态回调（健康监控接线；nil 时无副作用）。
-    var onConnection: ((Bool) -> Void)?
-
-    func atvvConnected(deviceName: String) {
-        log("已连接: \(deviceName)")
-        print("READY")
-        onConnection?(true)
-    }
-
-    func atvvDisconnected(error: String?) {
-        log("断开连接\(error.map { ": \($0)" } ?? "")（自动重连中）")
-        onConnection?(false)
-    }
-
-    func atvvVoiceStarted() {
-        log("语音开始")
-        restoreWork?.cancel()
-        restoreWork = nil
-        if switchInput {
-            log(DefaultInput.engage(deviceName: "BlackHole") ? "默认麦克风 → BlackHole" : "切换默认麦克风失败")
-        }
-        // 抖动幽灵会话（有 START/STOP 但零音频帧）不触发语音工具：
-        // 等第一个音频帧到达再触发，幽灵会话就永远碰不到豆包。
-        pendingTrigger = doubao
-        triggered = false
-        decoder.reset(predictor: 0, stepIndex: 0)
-        post.reset()
-        sink.streamStarted(sampleRate: 16000)
-    }
-
-    private var restoreWork: DispatchWorkItem?
-    private var pendingTrigger = false
-    private var triggered = false
-
-    func atvvVoiceStopped() {
-        log("语音结束")
-        pendingTrigger = false
-        if doubao && triggered { VoiceTrigger.end() } // 只有真正触发过才停
-        if switchInput {
-            // 延迟还原麦克风：给识别收尾留 1.2s，期间听到的是 BlackHole 静音而非环境音
-            let work = DispatchWorkItem {
-                DefaultInput.restore()
-                log("默认麦克风已还原")
-            }
-            restoreWork = work
-            DispatchQueue.global().asyncAfter(deadline: .now() + 1.2, execute: work)
-        }
-        sink.streamStopped()
-    }
-
-    func atvvAudioFrame(_ frame: Data, sync: (predictor: Int16, stepIndex: Int)?) {
-        if pendingTrigger {
-            pendingTrigger = false
-            triggered = true
-            VoiceTrigger.begin()
-        }
-        if let sync {
-            decoder.reset(predictor: sync.predictor, stepIndex: sync.stepIndex)
-        }
-        sink.write(post.process(decoder.decode(frame)))
-    }
-}
-
-// MARK: - M2 按键映射接线
-
-final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
-    let runner = ActionRunner()
-    var engine: MappingEngine!
-    let verbose: Bool
-
-    init(config: MappingConfig, verbose: Bool) {
-        self.verbose = verbose
-        engine = MappingEngine(config: config, runner: runner, delegate: self)
-        // 前台 app 变化 → 自动切 profile
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil) { [weak self] note in
-            let bundle = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
-            self?.engine.setActiveProfile(bundle)
-        }
-    }
-
-    func hidLog(_ message: String) { if verbose { log("HID \(message)") } }
-    func hidButton(_ event: ButtonEvent) {
-        if verbose { log("KEY \(event.key.rawValue) \(event.isDown ? "↓" : "↑")") }
-        engine.handle(event)
-    }
-    /// tap 存活态回调（健康监控接线；TapEngine 的健康检查/失效安全路径都会经过 hidSeizeState）。
-    var onSeizeState: ((Bool) -> Void)?
-
-    func hidSeizeState(_ exclusive: Bool) {
-        log(exclusive ? "按键已独占接管" : "按键降级为监听模式（系统仍会响应原始按键）")
-        onSeizeState?(exclusive)
-    }
-    func mappingLog(_ message: String) { if verbose { log("MAP \(message)") } }
-    func layerChanged(_ layer: Int) { log("层 → \(layer)") }
-}
-
-func loadOrCreateConfig() -> MappingConfig {
-    let url: URL
-    if let configPath {
-        url = URL(fileURLWithPath: configPath)
-    } else {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MiRemote")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        url = dir.appendingPathComponent("config.json")
-    }
-    let fileExists = FileManager.default.fileExists(atPath: url.path)
-    if fileExists, let data = try? Data(contentsOf: url) {
-        do {
-            let cfg = try JSONDecoder().decode(MappingConfig.self, from: data)
-            log("配置已加载: \(url.path)")
-            return cfg
-        } catch {
-            // Action 严格解码：未知 type/缺字段会走到这里。明确告知回退，绝不静默。
-            log("配置解析失败，使用默认配置（原文件保留未动）: \(error)")
-            return defaultConfig()   // 不覆盖用户的问题文件，便于修复
-        }
-    }
-    return writeDefaultConfig(to: url)
-}
-
-func writeDefaultConfig(to url: URL) -> MappingConfig {
-    let cfg = defaultConfig()
-    if let data = try? JSONEncoder().encode(cfg) {
-        try? data.write(to: url)
-        log("已生成默认配置: \(url.path)")
-    }
-    return cfg
-}
-
-func defaultConfig() -> MappingConfig {
-    // 默认配置：方向=方向键（层1 示例：上下=音量），OK=回车/长按进层1/按住+方向=手势，
-    // 返回=退格，菜单=调度中心，主页=启动台，TV=打开系统设置，电源=熄屏，音量=系统音量。
-    // 语音键放行给 ATVV。
-    var cfg = MappingConfig()
-    cfg.profiles["global"] = [
-        "up":      KeyBinding(tap: .keyStroke(key: "up_arrow", mods: []),
-                              layers: ["1": .system("volume_up")]),
-        "down":    KeyBinding(tap: .keyStroke(key: "down_arrow", mods: []),
-                              layers: ["1": .system("volume_down")]),
-        "left":    KeyBinding(tap: .keyStroke(key: "left_arrow", mods: [])),
-        "right":   KeyBinding(tap: .keyStroke(key: "right_arrow", mods: [])),
-        "ok":      KeyBinding(tap: .keyStroke(key: "return", mods: []),
-                              hold: .layerMomentary(1),
-                              gesture: [
-                                  "up":    .system("mission_control"),
-                                  "down":  .windowCycle(scope: "app"),
-                                  "left":  .keyStroke(key: "left_bracket", mods: ["left_cmd", "left_shift"]),
-                                  "right": .keyStroke(key: "right_bracket", mods: ["left_cmd", "left_shift"]),
-                              ]),
-        "back":    KeyBinding(tap: .keyStroke(key: "delete", mods: [])),
-        "menu":    KeyBinding(tap: .system("mission_control")),
-        "home":    KeyBinding(tap: .system("launchpad")),
-        // TV 双击 = 进/出 AI 批准层（层2，见 Presets.aiApprovalLayer）
-        "tv":      KeyBinding(tap: .openApp("com.apple.systempreferences"),
-                              double: .layerToggle(2)),
-        "power":   KeyBinding(tap: .system("display_sleep")),
-        "volUp":   KeyBinding(tap: .system("volume_up")),
-        "volDown": KeyBinding(tap: .system("volume_down")),
-        "voice":   KeyBinding(tap: .voice),
-    ]
-    // 内置预设并入默认配置：AI 批准层(层2)/多agent跳转 进 global，媒体/会议进 per-app overlay。
-    // 不覆盖上面已设的槽位（apply 默认 force=false）。
-    for p in Presets.all { Presets.apply(p, to: &cfg) }
-    return cfg
-}
-
-// 异常退出残留自修复：安装映射前检查设备上是否残留本程序中转条目（kill -9 等来不及恢复）。
-KeyRemapper.log = { log("HIDUTIL \($0)") }   // install/uninstall/清残留失败可见，不静默
-switch KeyRemapper.cleanResidualMapping() {
-case .cleaned(let n): log("检测到上次异常退出残留（\(n) 条 hidutil 中转映射），已清理")
-case .cleanFailed:    log("检测到上次异常退出残留，但清理失败（中转键可能泄漏，可运行 --doctor 重试）")
-case .none, .queryFailed: break   // queryFailed 含遥控器不在场，正常
-}
-
-// 健康状态机：四源汇聚（BLE 连接态 / tap 存活 / hidutil 映射在位 / 权限周期检查）。
-let health = HealthMonitor()
-health.log = { log("健康 \($0)") }
-health.onChange = { st in log("健康状态 → \(HealthMonitor.describe(st))") }   // M5 菜单栏图标变色接这里
-
-let app = VoiceBridgeApp(outputName: outputName, wavPath: wavPath, gainDB: gainDB, verbose: verbose, switchInput: switchInputFlag, doubao: doubaoFlag)
-app.onConnection = { health.setBLEConnected($0) }
-let bridge = ATVVBridge(delegate: app)
-
-/// IOHID 监听通道的过滤器：只放行"系统天然忽略"的键（如 back 0xF1），
-/// 其余键由 hidutil 中转 + CGEventTap 处理，这里放行会造成双触发。
-final class IOHIDOnlyFilter: HIDEngineDelegate {
-    let target: KeyMapperApp
-    let allowed: Set<RemoteKey> = [.back]
-    init(_ target: KeyMapperApp) { self.target = target }
-    func hidLog(_ message: String) { target.hidLog(message) }
-    func hidButton(_ event: ButtonEvent) {
-        target.hidLog("IOHID读到 \(event.key.rawValue) \(event.isDown ? "↓" : "↑")")
-        if allowed.contains(event.key) { target.hidButton(event) }
-    }
-    func hidSeizeState(_ exclusive: Bool) {} // 监听模式，无独占概念
-}
-
-var keyMapper: KeyMapperApp?
-var tapEngine: TapEngine?
-var hidFilter: IOHIDOnlyFilter?
-var hidEngine: HIDEngine?
-if keysFlag {
-    let km = KeyMapperApp(config: loadOrCreateConfig(), verbose: verbose)
-    let tap = TapEngine(delegate: km)
-    tap.router = km.engine  // 方向键三态分流的快照来源
-    let filter = IOHIDOnlyFilter(km)
-    let hid = HIDEngine(delegate: filter)
-    keyMapper = km
-    tapEngine = tap
-    hidFilter = filter
-    hidEngine = hid
-    // 健康监控接线：tap 存活喂状态机；周期检查发现映射缺失时委托 TapEngine 幂等重装。
-    health.setKeysEnabled(true)
-    km.onSeizeState = { health.setTapAlive($0) }
-    health.reinstallMapping = { tap.reinstallMapping(reason: "周期健康检查发现映射缺失") }
-    // 映射生命周期：蓝牙重连后设备服务重建，hidutil 映射可能失效 → 幂等重装；
-    // 设备移除 / 系统睡眠可能丢 keyUp → 复位引擎与 tap 的按压状态。
-    hid.onDeviceMatched = { tap.reinstallMapping(reason: "设备重连") }
-    hid.onDeviceRemoved = {
-        km.engine.resetInputState(reason: "设备移除")
-        tap.resetPressState()
-    }
-    let wsnc = NSWorkspace.shared.notificationCenter
-    wsnc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
-        tap.reinstallMapping(reason: "系统唤醒")
-    }
-    wsnc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in
-        km.engine.resetInputState(reason: "系统睡眠")
-        tap.resetPressState()
-    }
-    tap.start()
-    hid.start()
-    log("按键映射已启用（hidutil 中转 + CGEventTap + IOHID 监听兜底）")
-}
-
-health.startPeriodicChecks()   // 权限 60s 周期查询 + 映射在位校验（被撤时日志+状态回调）
-
-signal(SIGINT, SIG_IGN)
-let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-sigint.setEventHandler {
-    log("退出中…")
-    health.stop()
-    bridge.stop()
-    tapEngine?.stop() // 恢复 hidutil 映射
-    exit(0)
-}
-sigint.resume()
-
-log("启动，输出设备: \(outputName ?? "系统默认")\(wavPath.map { "，WAV: \($0)" } ?? "")")
-bridge.start()
-RunLoop.main.run()

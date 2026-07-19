@@ -542,7 +542,52 @@ enum SelfTest {
             expect(allOK.lines().allSatisfy { !$0.contains("http") },
                    "非需处理项不拼接 guideURL")
         }
+        // M5-1. ConfigStore 写回往返（临时文件；pretty/sortedKeys 编码稳定）
+        do {
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("miremote-selftest-\(ProcessInfo.processInfo.processIdentifier).json")
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            var cfg = MappingConfig()
+            cfg.settings.holdMs = 420
+            cfg.settings.doubleMs = 250
+            cfg.profiles["global"] = [
+                "ok": KeyBinding(tap: .keyStroke(key: "return", mods: ["right_option"]),
+                                 hold: .layerMomentary(1),
+                                 gesture: ["up": .system("mission_control")],
+                                 layers: ["2": .keyStroke(key: "1", mods: [])]),
+            ]
+            cfg.profiles["com.example.app"] = ["tv": KeyBinding(tap: .shell("true"))]
+            expect(ConfigStore.save(cfg, to: tmp), "ConfigStore 写入成功")
+            let back = ConfigStore.load(from: tmp)
+            expect(back?.settings.holdMs == 420 && back?.settings.doubleMs == 250
+                   && back?.profiles["global"]?["ok"]?.tap == .keyStroke(key: "return", mods: ["right_option"])
+                   && back?.profiles["global"]?["ok"]?.layers?["2"] == .keyStroke(key: "1", mods: [])
+                   && back?.profiles["com.example.app"]?["tv"]?.tap == .shell("true"),
+                   "ConfigStore 写回往返")
+            // 损坏文件 → load 返回 nil（UI 体检页「恢复默认配置」路径）
+            try? Data("not json".utf8).write(to: tmp)
+            expect(ConfigStore.load(from: tmp) == nil, "ConfigStore 损坏文件返回 nil")
+        }
 
+        // M5-2. Action 人类可读摘要（ActionPicker 关闭态 / 预设预览共用的纯函数）
+        expect(ActionSummary.selfCheck(), "ActionSummary 摘要渲染")
+
+        // M5-3. RemoteDiagram 几何命中测试（13 键 + 空白区）
+        expect(RemoteDiagramGeometry.selfCheck(), "RemoteDiagram 命中测试")
+
+        // M5-4. 键展示元数据齐备（13 键中文名/usage/徽标）
+        expect(KeyDisplay.selfCheck(), "KeyDisplay 13 键元数据齐备")
+
+        // M5-5. 录制键名反查表：常用键可反查、别名不夺位
+        expect(KeyNameLookup.canonical[36] == "return"
+               && KeyNameLookup.canonical[53] == "escape"
+               && KeyNameLookup.canonical[51] == "delete"
+               && KeyNameLookup.canonical[126] == "up_arrow",
+               "KeyNameLookup 反查表规范名")
+        // 修饰键设备位 → 名称
+        expect(KeyNameLookup.mods(fromRawFlags: 0x08 | 0x02).sorted() == ["left_cmd", "left_shift"]
+               && KeyNameLookup.mods(fromRawFlags: 0x40) == ["right_option"],
+               "KeyNameLookup 左右修饰位解析")
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")
         return failures == 0 ? 0 : 1
     }

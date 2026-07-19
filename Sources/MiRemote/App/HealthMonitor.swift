@@ -85,6 +85,8 @@ enum LoginItem {
     /// register() 会失败（launchd 找不到可注册的 bundle）。打包（M6）后生效。
     static var isBundled: Bool { Bundle.main.bundleURL.pathExtension == "app" }
 
+    static var isEnabled: Bool { SMAppService.mainApp.status == .enabled }
+
     static func statusDescription() -> String {
         switch SMAppService.mainApp.status {
         case .enabled:          return "已开启"
@@ -168,6 +170,7 @@ final class HealthMonitor: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.miremote.health")
 
     var overall: HealthState { state.withLock { $0.overall } }
+    var sourcesSnapshot: HealthSources { state.withLock { $0.sources } }
 
     /// 四源汇聚的纯判定（self-test 直接测这里）。
     static func computeOverall(_ s: HealthSources) -> HealthState {

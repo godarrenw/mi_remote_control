@@ -1,0 +1,98 @@
+import SwiftUI
+
+enum SidebarItem: String, CaseIterable, Identifiable {
+    case mapping, profile, voice, general
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mapping: return "按键映射"
+        case .profile: return "Profile"
+        case .voice:   return "语音"
+        case .general: return "通用"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .mapping: return "dpad"
+        case .profile: return "rectangle.stack"
+        case .voice:   return "mic"
+        case .general: return "gearshape"
+        }
+    }
+}
+
+@MainActor
+struct RootView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var selection: SidebarItem = .mapping
+    @State private var showOnboarding = false
+    @State private var showHealthCheck = false
+
+    var body: some View {
+        NavigationSplitView {
+            VStack(alignment: .leading, spacing: 0) {
+                // 侧栏头部
+                HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(red: 0.11, green: 0.11, blue: 0.12))
+                            .frame(width: 36, height: 36)
+                        Image(systemName: "av.remote")
+                            .foregroundStyle(.white)
+                            .font(.system(size: 16))
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("遥控器控制台").font(.system(size: 13, weight: .semibold))
+                        HStack(spacing: 4) {
+                            Text("MI RC 2 Pro").font(.caption2).foregroundStyle(.secondary)
+                            if let pct = model.batteryPercent {
+                                Image(systemName: batterySymbol(pct)).font(.caption2).foregroundStyle(.secondary)
+                                Text("\(pct)%").font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 14)
+
+                List(SidebarItem.allCases, selection: $selection) { item in
+                    Label(item.title, systemImage: item.icon).tag(item)
+                }
+                .listStyle(.sidebar)
+            }
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
+        } detail: {
+            switch selection {
+            case .mapping: MappingPage()
+            case .profile: ProfilePage(selection: $selection)
+            case .voice:   VoicePage()
+            case .general: GeneralPage(onShowOnboarding: { showOnboarding = true },
+                                       onShowHealthCheck: { showHealthCheck = true })
+            }
+        }
+        .frame(minWidth: 760, minHeight: 560)
+        .sheet(isPresented: $showOnboarding) { OnboardingWizard() }
+        .sheet(isPresented: $showHealthCheck) { HealthCheckSheet() }
+        .onAppear {
+            if !model.hasCompletedOnboarding { showOnboarding = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .miremoteShowHealthCheck)) { _ in
+            showHealthCheck = true
+        }
+    }
+
+    private func batterySymbol(_ pct: Int) -> String {
+        switch pct {
+        case 0..<15:  return "battery.0percent"
+        case 15..<40: return "battery.25percent"
+        case 40..<65: return "battery.50percent"
+        case 65..<90: return "battery.75percent"
+        default:      return "battery.100percent"
+        }
+    }
+}
+
+extension Notification.Name {
+    static let miremoteShowHealthCheck = Notification.Name("com.miremote.showHealthCheck")
+}

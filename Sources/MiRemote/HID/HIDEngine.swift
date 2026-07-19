@@ -56,7 +56,9 @@ final class HIDEngine: @unchecked Sendable {
         IOHIDManagerRegisterDeviceMatchingCallback(mgr, HIDEngine.deviceMatchedCallback, ctx)
         IOHIDManagerRegisterDeviceRemovalCallback(mgr, HIDEngine.deviceRemovedCallback, ctx)
 
-        IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        // .commonModes：GUI 模式下主 runloop 常处于事件追踪等非 default 模式
+        // （拖动窗口/菜单打开时），default 模式会饿死 IOHID 回调——用 common modes 保回调不断流。
+        IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
 
         // 只走监听模式，绝不 seize——失败后 Close 重开会让 manager 收不到任何事件。
         let ret = IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
@@ -70,7 +72,7 @@ final class HIDEngine: @unchecked Sendable {
 
     func stop() {
         guard let mgr = manager else { return }
-        IOHIDManagerUnscheduleFromRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        IOHIDManagerUnscheduleFromRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
         IOHIDManagerClose(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
         manager = nil
     }
