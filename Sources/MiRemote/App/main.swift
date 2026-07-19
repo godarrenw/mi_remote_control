@@ -239,20 +239,24 @@ func defaultConfig() -> MappingConfig {
                               hold: .layerMomentary(1),
                               gesture: [
                                   "up":    .system("mission_control"),
-                                  // window_cycle 占位：cmd+` 同应用窗口循环（M4 落地后换专用动作）
-                                  "down":  .keyStroke(key: "grave", mods: ["left_cmd"]),
+                                  "down":  .windowCycle(scope: "app"),
                                   "left":  .keyStroke(key: "left_bracket", mods: ["left_cmd", "left_shift"]),
                                   "right": .keyStroke(key: "right_bracket", mods: ["left_cmd", "left_shift"]),
                               ]),
         "back":    KeyBinding(tap: .keyStroke(key: "delete", mods: [])),
         "menu":    KeyBinding(tap: .system("mission_control")),
         "home":    KeyBinding(tap: .system("launchpad")),
-        "tv":      KeyBinding(tap: .openApp("com.apple.systempreferences")),
+        // TV 双击 = 进/出 AI 批准层（层2，见 Presets.aiApprovalLayer）
+        "tv":      KeyBinding(tap: .openApp("com.apple.systempreferences"),
+                              double: .layerToggle(2)),
         "power":   KeyBinding(tap: .system("display_sleep")),
         "volUp":   KeyBinding(tap: .system("volume_up")),
         "volDown": KeyBinding(tap: .system("volume_down")),
         "voice":   KeyBinding(tap: .voice),
     ]
+    // 内置预设并入默认配置：AI 批准层(层2)/多agent跳转 进 global，媒体/会议进 per-app overlay。
+    // 不覆盖上面已设的槽位（apply 默认 force=false）。
+    for p in Presets.all { Presets.apply(p, to: &cfg) }
     return cfg
 }
 
