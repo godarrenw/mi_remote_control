@@ -230,10 +230,28 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
     private let post: PCMPostprocessor
     private let sink: PCMSink
     private let verbose: Bool
-    /// GUI 语音页可切换（模式 A=true / 模式 B=false）。ATVV 队列读、主线程写，布尔读写原子性可接受。
-    var switchInput: Bool
+
+    /// 配置位：GUI 主线程写、ATVV 队列读——锁保护（Bool 竞态读写是未定义行为，
+    /// 且会话中途切换会导致 stop 侧清理判断错位，见下方会话锁存）。
+    private let cfgLock = NSLock()
+    private var _switchInput: Bool
+    private var _doubao: Bool
+    /// GUI 语音页可切换（模式 A=true / 模式 B=false）。
+    var switchInput: Bool {
+        get { cfgLock.lock(); defer { cfgLock.unlock() }; return _switchInput }
+        set { cfgLock.lock(); _switchInput = newValue; cfgLock.unlock() }
+    }
     /// 是否触发豆包（模式 off=false）。
-    var doubao: Bool
+    var doubao: Bool {
+        get { cfgLock.lock(); defer { cfgLock.unlock() }; return _doubao }
+        set { cfgLock.lock(); _doubao = newValue; cfgLock.unlock() }
+    }
+
+    /// 会话锁存（cfgLock 保护）：一次语音会话实际执行过的操作。stop/结束只按锁存
+    /// 状态对称清理——会话中把模式切到 off/macMic 不能跳过已做操作的回滚。
+    private var sessionActive = false
+    private var sessionSwitchedMic = false
+    private var sessionDoubao = false
 
     /// GUI 状态反馈钩子（ATVV 队列回调）。
     var onConnection: ((Bool, String?) -> Void)?
@@ -249,8 +267,8 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
          extraSink: PCMSink? = nil) {
         self.post = PCMPostprocessor(gainDB: gainDB)
         self.verbose = verbose
-        self.switchInput = switchInput
-        self.doubao = doubao
+        self._switchInput = switchInput
+        self._doubao = doubao
         self.micDeviceName = micDeviceName
         var sinks: [PCMSink] = [AudioBridge(deviceName: outputName)]
         if let wavPath {
@@ -280,15 +298,26 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         onVoiceActive?(true)
         restoreWork?.cancel()
         restoreWork = nil
-        if switchInput {
-            log(DefaultInput.engage(deviceName: micDeviceName)
+        // 会话锁存：本会话按此刻的配置执行并记录实际做过的操作，
+        // 结束/stop 只按锁存值对称回滚（会话中途改配置不影响本会话清理）。
+        let (wantSwitch, wantDoubao): (Bool, Bool) = {
+            cfgLock.lock(); defer { cfgLock.unlock() }
+            sessionActive = true
+            sessionSwitchedMic = _switchInput
+            sessionDoubao = _doubao
+            return (_switchInput, _doubao)
+        }()
+        if wantSwitch {
+            let engaged = DefaultInput.engage(deviceName: micDeviceName)
+            if !engaged { cfgLock.lock(); sessionSwitchedMic = false; cfgLock.unlock() }
+            log(engaged
                 ? "默认麦克风 → \(micDeviceName)"
                 : "切换默认麦克风失败（未找到 \(micDeviceName)*，未装虚拟声卡？语音出字不可用，按键功能不受影响）")
         }
         // 抖动幽灵会话（有 START/STOP 但零音频帧）不触发语音工具：
         // 等第一个音频帧到达再触发，幽灵会话就永远碰不到豆包。
-        pendingTrigger = doubao
-        triggered = false
+        pendingTrigger = wantDoubao
+        cfgLock.lock(); triggered = false; cfgLock.unlock()
         decoder.reset(predictor: 0, stepIndex: 0)
         post.reset()
         sink.streamStarted(sampleRate: 16000)
@@ -302,8 +331,16 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         log("语音结束")
         onVoiceActive?(false)
         pendingTrigger = false
-        if doubao && triggered { VoiceTrigger.end() } // 只有真正触发过才停
-        if switchInput {
+        let (didSwitch, didDoubao, didTrigger): (Bool, Bool, Bool) = {
+            cfgLock.lock(); defer { cfgLock.unlock() }
+            let r = (sessionSwitchedMic, sessionDoubao, triggered)
+            sessionActive = false
+            sessionSwitchedMic = false
+            sessionDoubao = false
+            return r
+        }()
+        if didDoubao && didTrigger { VoiceTrigger.end() } // 只有真正触发过才停
+        if didSwitch {
             // 延迟还原麦克风：给识别收尾留 1.2s，期间听到的是 BlackHole 静音而非环境音
             let work = DispatchWorkItem {
                 DefaultInput.restore()
@@ -315,10 +352,31 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         sink.streamStopped()
     }
 
+    /// 服务停止兜底：语音会话仍在进行时按锁存状态强制收尾
+    ///（松开触发键、还原默认麦克风），防止 stop 后修饰键粘住/麦克风停在 BlackHole。
+    func forceEndSessionIfActive() {
+        let (active, didSwitch, didDoubao, didTrigger): (Bool, Bool, Bool, Bool) = {
+            cfgLock.lock(); defer { cfgLock.unlock() }
+            let r = (sessionActive, sessionSwitchedMic, sessionDoubao, triggered)
+            sessionActive = false
+            sessionSwitchedMic = false
+            sessionDoubao = false
+            return r
+        }()
+        guard active else { return }
+        log("服务停止：语音会话仍在进行，强制收尾")
+        if didDoubao && didTrigger { VoiceTrigger.end() }
+        if didSwitch {
+            restoreWork?.cancel()
+            restoreWork = nil
+            DefaultInput.restore()
+        }
+    }
+
     func atvvAudioFrame(_ frame: Data, sync: (predictor: Int16, stepIndex: Int)?) {
         if pendingTrigger {
             pendingTrigger = false
-            triggered = true
+            cfgLock.lock(); triggered = true; cfgLock.unlock()
             VoiceTrigger.begin(config: resolveTriggerConfig?())
         }
         if let sync {
@@ -386,6 +444,9 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
         target.activate()
     }
 
+    /// 前台切换 observer token：stop/deinit 时移除，防旧服务泄漏与回调叠加。
+    private var activateObserver: NSObjectProtocol?
+
     init(config: MappingConfig, verbose: Bool) {
         self.verbose = verbose
         engine = MappingEngine(config: config, runner: runner, delegate: self)
@@ -398,7 +459,7 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
             onActiveApplication?(front.bundleIdentifier)
         }
         // 前台 app 变化 → 自动切 profile。忽略本进程（设置窗口拿到前台不改 profile）。
-        NSWorkspace.shared.notificationCenter.addObserver(
+        activateObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil) { [weak self] note in
             guard let self,
                   let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
@@ -409,6 +470,16 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
             self.onActiveApplication?(app.bundleIdentifier)
         }
     }
+
+    /// 服务停止时显式解除通知订阅（closure observer 强持有直至 remove）。
+    func invalidate() {
+        if let activateObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(activateObserver)
+        }
+        activateObserver = nil
+    }
+
+    deinit { invalidate() }
 
     func hidLog(_ message: String) { if verbose { log("HID \(message)") } }
     func hidButton(_ event: ButtonEvent) {
@@ -510,6 +581,9 @@ final class AppServices {
     private(set) var hidEngine: HIDEngine?
     private(set) var started = false
     private let voiceRuleStore = VoiceRuleStore()
+    /// 睡眠/唤醒/设备事件的 observer tokens：stop 时逐个移除（否则旧服务无法释放、
+    /// 重新 start 会叠加回调；闭包内一律弱捕获 tap/km 作为第二道防线）。
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     /// 启动期语音触发三级合并（纯函数，供自测）：内置默认 ← 配置 global 规则 ← CLI 标志。
     /// cliIME 双层 Optional：nil=CLI 未给；.some(nil)=--ime none（不切输入法）；.some(v)=指定前缀。
@@ -594,6 +668,10 @@ final class AppServices {
             hidEngine = hid
             health.setKeysEnabled(true)
             km.onSeizeState = { [weak health] alive in health?.setTapAlive(alive) }
+            // tap 与映射是两个独立健康源：映射在位状态由 TapEngine 的安装结果直接上报。
+            tap.onMappingState = { [weak health] installed in
+                health?.setMappingInstalled(installed)
+            }
             health.reinstallMapping = { [weak tap] in
                 tap?.reinstallMapping(reason: "周期健康检查发现映射缺失")
             }
@@ -605,19 +683,21 @@ final class AppServices {
             }
             // 映射生命周期：蓝牙重连后设备服务重建，hidutil 映射可能失效 → 幂等重装；
             // 设备移除 / 系统睡眠可能丢 keyUp → 复位引擎与 tap 的按压状态。
-            hid.onDeviceMatched = { tap.reinstallMapping(reason: "设备重连") }
-            hid.onDeviceRemoved = {
-                km.engine.resetInputState(reason: "设备移除")
-                tap.resetPressState()
+            hid.onDeviceMatched = { [weak tap] in tap?.reinstallMapping(reason: "设备重连") }
+            hid.onDeviceRemoved = { [weak km, weak tap] in
+                km?.engine.resetInputState(reason: "设备移除")
+                tap?.resetPressState()
             }
             let wsnc = NSWorkspace.shared.notificationCenter
-            wsnc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
-                tap.reinstallMapping(reason: "系统唤醒")
-            }
-            wsnc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in
-                km.engine.resetInputState(reason: "系统睡眠")
-                tap.resetPressState()
-            }
+            workspaceObservers.append(wsnc.addObserver(
+                forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { [weak tap] _ in
+                tap?.reinstallMapping(reason: "系统唤醒")
+            })
+            workspaceObservers.append(wsnc.addObserver(
+                forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { [weak km, weak tap] _ in
+                km?.engine.resetInputState(reason: "系统睡眠")
+                tap?.resetPressState()
+            })
             tap.start()
             hid.start()
             log("按键映射已启用（hidutil 中转 + CGEventTap + IOHID 监听兜底）")
@@ -632,15 +712,24 @@ final class AppServices {
         bridge.start()
     }
 
-    /// 停止并恢复系统状态（hidutil 中转恢复、语音断开）。幂等。
+    /// 停止并恢复系统状态（hidutil 中转恢复、语音断开、shell 进程组清扫）。幂等。
     func stop() {
         guard started else { return }
         started = false
         eventListener.stop()
         health.stop()
         bridge.stop()
+        voiceApp.forceEndSessionIfActive()   // 会话进行中被 stop：松触发键/还原麦克风
         tapEngine?.stop() // 恢复 hidutil 映射
         hidEngine?.stop()
+        // observer / 回调解除：旧服务对象可释放，重新 start 不叠加回调。
+        let wsnc = NSWorkspace.shared.notificationCenter
+        workspaceObservers.forEach { wsnc.removeObserver($0) }
+        workspaceObservers.removeAll()
+        keyMapper?.invalidate()
+        ActionRunner.onAppMRUBack = nil
+        // shell 动作派生的活动进程组：TERM→KILL 清扫，超时承诺随服务生命周期兑现。
+        ShellProcessRegistry.shared.terminateAll()
         log("服务已停止，hidutil 中转已恢复")
     }
 

@@ -17,6 +17,9 @@ struct TapRoute: Sendable {
     /// M5 v2 浮层捕获态：true=有浮层打开，遥控键（含方向键）必须全部吞给引擎，
     /// 由引擎转发给浮层的 OverlayKeyHandler，绝不透传原生方向键。
     var uiCapture: Bool = false
+    /// 鼠标模式捕获态：true=方向键吞给引擎（MouseMode.handle 消费为光标移动）。
+    /// 引擎快照不维护此位——TapEngine 分流时实时读 MouseMode.shared.isActive 填充。
+    var mouseCapture: Bool = false
 }
 
 /// 按键映射状态机（DESIGN.md §3.1-§3.3）。
@@ -134,8 +137,11 @@ final class MappingEngine: @unchecked Sendable {
             }
             guard changed else { return }
             // 暂停即回到干净基态：锁定层一并清除（_resetInputState 只清瞬时层），
-            // 恢复后从基础层开始，不残留看不见的模式态。
-            if suspended { self.lockedLayer = 0 }
+            // 恢复后从基础层开始，不残留看不见的模式态；鼠标模式一并退出。
+            if suspended {
+                self.lockedLayer = 0
+                MouseMode.shared.deactivate()
+            }
             self._resetInputState(suspended ? "遥控暂停" : "遥控恢复")
             self.onSuspendChanged?(suspended)
         }
@@ -308,6 +314,9 @@ final class MappingEngine: @unchecked Sendable {
             mainDispatch { overlayHandler(event) }
             return
         }
+        // 鼠标模式：方向/OK/菜单/返回由 MouseMode 消费（方向=移动、OK=左键、菜单=右键、
+        // 返回=退出模式），消费后不再走普通映射；其余键（电源/音量/语音）照常。
+        if MouseMode.shared.handle(key: event.key, isDown: event.isDown) { return }
         if event.key == .ok, okPhysicallyDown != event.isDown {
             okPhysicallyDown = event.isDown
             publishTapRoute()
@@ -378,6 +387,7 @@ final class MappingEngine: @unchecked Sendable {
     /// UI 依此关 HUD/角标）→ 主线程通知 UI 侧关闭所有浮层。
     private func fireEscapeHatch() {
         overlayHandler = nil
+        MouseMode.shared.deactivate()   // 迷路兜底：鼠标模式一并退出
         lockedLayer = 0
         momentaryLayer = nil
         momentaryOwner = nil

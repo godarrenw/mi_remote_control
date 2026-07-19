@@ -127,7 +127,20 @@ while let argument = args.first {
             FileHandle.standardError.write("动作 JSON 解析失败: \(error)\n".data(using: .utf8)!)
             exit(2)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(0) }
+        // 等动作真正执行完再退出：宏在后台队列串行跑（可能远超 1s），shell 有
+        // 10s+2s 的超时清理定时器——主进程提前退出会把二者截断/孤儿化。
+        // 轮询「宏不在跑 && 无活动 shell 进程组」，最短 1s，硬上限 120s（超时
+        // 时对残余 shell 组 TERM→KILL 清扫后退出）。
+        let runActionDeadline = Date().addingTimeInterval(120)
+        func pollRunActionExit() {
+            let done = !MacroEngine.shared.isRunning && ShellProcessRegistry.shared.activeCount == 0
+            if done || Date() > runActionDeadline {
+                ShellProcessRegistry.shared.terminateAll()
+                exit(done ? 0 : 1)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { pollRunActionExit() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { pollRunActionExit() }
         RunLoop.main.run()
     case "--help", "-h":
         print("miremote                     GUI 模式（设置窗口 + 引擎）")
@@ -175,12 +188,30 @@ func notifyRunningInstance(_ line: String) {
 
 // 两份长驻进程会同时争用 hidutil / CGEventTap，CLI 服务模式与 GUI 都要独占；
 // --ui-preview（引擎不启动、不装映射不抢键盘，纯界面开发验证）豁免。
-if !uiPreview, !HealthMonitor.acquireSingleInstanceLock() {
-    // 双击 .app 再次打开＝想看设置窗口：通知主实例弹出 UI（菜单栏优先形态的兜底入口）。
-    if !cliServiceMode { notifyRunningInstance(#"{"event":"show_ui"}"#) }
-    print("已有实例在运行（锁文件 \(HealthMonitor.lockFilePath())），本次启动退出。")
-    print("提示：--help / --doctor 等只读命令不受单实例限制，可随时执行。")
-    exit(1)
+if !uiPreview {
+    switch HealthMonitor.acquireSingleInstanceLock(mode: cliServiceMode ? "cli" : "gui") {
+    case .acquired:
+        break
+    case .held(let owner):
+        if owner?.mode == "cli" {
+            // CLI 服务实例明确丢弃 show_ui 事件——发了也弹不出窗口，给真实提示。
+            let pid = owner!.pid
+            print("MiRemote 正以命令行模式运行（PID \(pid)），请先停止它（Ctrl+C 或 kill \(pid)）再启动本实例。")
+        } else {
+            // 双击 .app 再次打开＝想看设置窗口：通知 GUI 主实例弹出 UI
+            //（菜单栏优先形态的兜底入口）。owner 未知（旧版锁文件）也尽力而为。
+            if !cliServiceMode { notifyRunningInstance(#"{"event":"show_ui"}"#) }
+            print("已有实例在运行（锁文件 \(HealthMonitor.lockFilePath())）"
+                  + (cliServiceMode ? "，本次启动退出。" : "，已请求主实例打开设置窗口。"))
+        }
+        print("提示：--help / --doctor 等只读命令不受单实例限制，可随时执行。")
+        exit(1)
+    case .openFailed(let err):
+        FileHandle.standardError.write(
+            ("单实例锁文件无法创建/打开（\(String(cString: strerror(err)))）：\(HealthMonitor.lockFilePath())\n"
+             + "这不是「已有实例在运行」——请检查该目录的权限/磁盘状态后重试。\n").data(using: .utf8)!)
+        exit(1)
+    }
 }
 
 if cliServiceMode && !uiPreview {

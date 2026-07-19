@@ -27,6 +27,9 @@ struct HealthSources: Equatable {
     var inputMonitoringGranted = true
     /// 暂停遥控位：暂停期间映射被有意卸载，tap/映射两项不按故障判定、不自动重装。
     var suspended = false
+    /// hidutil 映射在位查询失败（遥控器不在场/hidutil 异常）：查询失败≠映射缺失，
+    /// mappingInstalled 保留旧值，此位单独标记 degraded 提示。
+    var mappingQueryFailed = false
 }
 
 // MARK: - 一键体检与修复
@@ -134,8 +137,9 @@ final class HealthMonitor: @unchecked Sendable {
     }
 
     /// flock 独占非阻塞。返回持有的 fd；拿不到（已有实例/打开失败）返回 nil。
+    /// O_CLOEXEC：hidutil/zsh 等子进程绝不能继承锁 fd（否则主程序退出后子进程仍持锁）。
     static func tryLock(path: String) -> Int32? {
-        let fd = open(path, O_CREAT | O_RDWR, 0o644)
+        let fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o644)
         guard fd >= 0 else { return nil }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             close(fd)
@@ -144,14 +148,45 @@ final class HealthMonitor: @unchecked Sendable {
         return fd
     }
 
-    /// main 最早调用。false = 已有实例在运行（或锁文件不可创建）。
-    static func acquireSingleInstanceLock() -> Bool {
+    /// 锁文件内容：持有者身份（GUI 只向 GUI 持有者发 show_ui；CLI 持有者要给真实提示）。
+    struct LockOwner: Codable, Equatable {
+        let pid: Int32
+        let mode: String   // "gui" | "cli"
+    }
+
+    /// 锁文件内容 → 持有者信息（纯函数，self-test 直接测）。坏 JSON/空 → nil。
+    static func parseLockOwner(_ data: Data) -> LockOwner? {
+        try? JSONDecoder().decode(LockOwner.self, from: data)
+    }
+
+    enum LockAcquisition {
+        case acquired
+        /// 已有实例持锁；owner=锁文件里的持有者信息（读不到/旧版本写的锁 → nil）。
+        case held(LockOwner?)
+        /// open() 失败（权限/IO 错误），不是「已有实例」。带 errno。
+        case openFailed(Int32)
+    }
+
+    /// main 最早调用。成功后把持有者 pid/mode 写入锁文件（flock 与文件内容独立：
+    /// 内容仅供第二实例读取提示用，互斥仍由 flock 保证）。
+    static func acquireSingleInstanceLock(mode: String) -> LockAcquisition {
         let path = lockFilePath()
         try? FileManager.default.createDirectory(
             atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        guard let fd = tryLock(path: path) else { return false }
+        let fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o644)
+        guard fd >= 0 else { return .openFailed(errno) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            var buf = [UInt8](repeating: 0, count: 4096)
+            let n = pread(fd, &buf, buf.count, 0)
+            close(fd)
+            return .held(n > 0 ? parseLockOwner(Data(buf[0..<n])) : nil)
+        }
         lockFD = fd
-        return true
+        if let data = try? JSONEncoder().encode(LockOwner(pid: getpid(), mode: mode)) {
+            ftruncate(fd, 0)
+            _ = data.withUnsafeBytes { pwrite(fd, $0.baseAddress, $0.count, 0) }
+        }
+        return .acquired
     }
 
     /// 只探测不持有：能拿到锁说明没有活实例，立即释放。打开失败保守视为「有实例」，
@@ -203,6 +238,9 @@ final class HealthMonitor: @unchecked Sendable {
             if s.keysEnabled && s.tapAlive && !s.mappingInstalled {
                 degraded.append("hidutil 中转映射不在位（中转键位暂不生效）")
             }
+            if s.keysEnabled && s.tapAlive && s.mappingQueryFailed {
+                degraded.append("hidutil 映射状态查询失败（遥控器可能未连接，保持上次状态）")
+            }
         }
         if !s.bleConnected {
             degraded.append("遥控器蓝牙未连接（语音不可用，自动重连中）")
@@ -239,7 +277,9 @@ final class HealthMonitor: @unchecked Sendable {
 
     func setKeysEnabled(_ v: Bool)      { update { $0.keysEnabled = v } }
     func setBLEConnected(_ v: Bool)     { update { $0.bleConnected = v } }
-    func setTapAlive(_ v: Bool)         { update { $0.tapAlive = v; $0.mappingInstalled = v } }
+    /// tap 与 mapping 是两个独立健康源：tap 存活不代表映射在位（安装可能失败），
+    /// 映射状态只经 setMappingInstalled（TapEngine.onMappingState / 周期校验）更新。
+    func setTapAlive(_ v: Bool)         { update { $0.tapAlive = v } }
     func setMappingInstalled(_ v: Bool) { update { $0.mappingInstalled = v } }
     func setSuspended(_ v: Bool)        { update { $0.suspended = v } }
 
@@ -263,17 +303,32 @@ final class HealthMonitor: @unchecked Sendable {
         let ax = EnvironmentCheck.accessibility().state == .granted
         let im = EnvironmentCheck.inputMonitoring().state != .denied
         var mappingMissing = false
+        var queryFailed = false
         let (keys, tapAlive, suspended) = state.withLock {
             ($0.sources.keysEnabled, $0.sources.tapAlive, $0.sources.suspended)
         }
         // 暂停期间映射被有意卸载，不查在位、不触发重装。
-        if keys, tapAlive, !suspended, let present = KeyRemapper.mappingPresent() {
-            mappingMissing = !present
+        // 三态处理：true=在位、false=缺失（触发重装）、nil=查询失败（≠缺失，
+        // mappingInstalled 保留旧值，只标记 degraded，不盲目重装）。
+        if keys, tapAlive, !suspended {
+            switch KeyRemapper.mappingPresent() {
+            case true?:  break
+            case false?: mappingMissing = true
+            case nil:    queryFailed = true
+            }
         }
         update { s in
             s.accessibilityGranted = ax
             s.inputMonitoringGranted = im
-            if keys, tapAlive, !suspended { s.mappingInstalled = !mappingMissing }
+            if keys, tapAlive, !suspended {
+                s.mappingQueryFailed = queryFailed
+                if !queryFailed { s.mappingInstalled = !mappingMissing }
+            } else {
+                s.mappingQueryFailed = false
+            }
+        }
+        if queryFailed {
+            log?("周期检查：hidutil 映射状态查询失败（遥控器可能未连接），保持上次状态")
         }
         if mappingMissing {
             log?("周期检查：hidutil 中转映射缺失，触发重装")

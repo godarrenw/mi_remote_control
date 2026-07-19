@@ -97,7 +97,20 @@ struct MappingDetailView: View {
         }
         .padding(Spacing.sheetPadding)
         .frame(minWidth: 760, minHeight: isQuickLook ? 500 : 480)
-        .background(Color(nsColor: .windowBackgroundColor))
+        // 速查浮层与其余三浮层统一 HUD 体系：材质大卡；设置页 sheet 保持不透明底
+        .background {
+            if isQuickLook {
+                RoundedRectangle(cornerRadius: Radius.overlay).fill(.regularMaterial)
+            } else {
+                Color(nsColor: .windowBackgroundColor)
+            }
+        }
+        .overlay {
+            if isQuickLook {
+                RoundedRectangle(cornerRadius: Radius.overlay)
+                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+            }
+        }
     }
 
     private func tableHeader(_ title: String, width: CGFloat?) -> some View {
@@ -209,20 +222,23 @@ final class MappingQuickLookController {
         let root = MappingDetailView(config: model.config, profile: profile,
                                      appName: appName, isQuickLook: true,
                                      onClose: nil)
-        let host = NSHostingView(rootView: root)
-        let p = panel ?? NSPanel(contentRect: NSRect(x: 0, y: 0, width: 840, height: 570),
-                                 styleMask: [.titled, .nonactivatingPanel, .fullSizeContentView],
+        // 与其余浮层同款 HUD：无边框透明面板 + 材质圆角大卡（视觉体系统一）
+        let host = NSHostingView(rootView: root
+            .shadow(color: .black.opacity(0.3), radius: 24, y: 8)
+            .padding(28))
+        let p = panel ?? NSPanel(contentRect: NSRect(x: 0, y: 0, width: 960, height: 620),
+                                 styleMask: [.borderless, .nonactivatingPanel],
                                  backing: .buffered, defer: true)
-        p.title = "当前 App 映射速查"
-        p.titleVisibility = .hidden
-        p.titlebarAppearsTransparent = true
         p.level = .floating
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
         p.isReleasedWhenClosed = false
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.contentView = host
-        // 高度尽量容纳全部 13 行（约 820pt），超出屏幕 85% 时回退为内部滚动，避免底部硬裁切
-        let maxHeight = (NSScreen.main?.visibleFrame.height ?? 900) * 0.85
-        p.setContentSize(NSSize(width: 840, height: min(820, maxHeight)))
+        // 高度尽量容纳全部 13 行（约 880pt 含外边距），超出屏幕 90% 时回退为内部滚动
+        let maxHeight = (NSScreen.main?.visibleFrame.height ?? 900) * 0.9
+        p.setContentSize(NSSize(width: 960, height: min(880, maxHeight)))
         p.center()
         panel = p
         isVisible = true

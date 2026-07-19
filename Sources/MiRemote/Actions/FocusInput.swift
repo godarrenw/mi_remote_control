@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import os
 
 /// 自动聚焦前台 app 的文本输入框（DESIGN §4.4，三级兜底）：
 ///   ① 终端类 app（TUI 无独立 AX 文本框）：前置窗口即聚焦输入行，到此为止；
@@ -24,9 +25,13 @@ enum FocusInput {
         "co.zeit.hyper",
     ]
 
-    /// 配置追加的终端 bundle id（settings.terminalApps）。启动/applyConfig 时整体替换，
-    /// 主线程写、动作线程读——String Set 值替换的竞态最多短暂读到旧表，可接受。
-    nonisolated(unsafe) static var extraTerminalBundles: Set<String> = []
+    /// 配置追加的终端 bundle id（settings.terminalApps）。启动/applyConfig 时主线程
+    /// 整体替换、映射动作线程读——Swift 集合并发读写是数据竞争（可能崩溃），锁保护。
+    private static let extraLock = OSAllocatedUnfairLock(initialState: Set<String>())
+    static var extraTerminalBundles: Set<String> {
+        get { extraLock.withLock { $0 } }
+        set { extraLock.withLock { $0 = newValue } }
+    }
 
     static func isTerminalApp(_ bundleID: String?) -> Bool {
         guard let bundleID else { return false }

@@ -71,6 +71,9 @@ enum KeyRemapper {
         guard let arrow = nativeArrowKeycode[key] else { return nil }
         // 浮层捕获态：方向键必须吞给引擎（引擎再转交浮层），绝不原生放行。
         if route.uiCapture { return isRepeat ? .drop : .engine }
+        // 鼠标模式：方向键喂引擎（MouseMode.handle 消费为光标移动），autorepeat 吞弃
+        //（移动靠按住状态 + 60Hz 定时器，不靠系统重复事件）。
+        if route.mouseCapture { return isRepeat ? .drop : .engine }
         if route.effectiveLayer == 0, !route.okDown, route.nativeDirections.contains(key) {
             return .rewrite(arrow)
         }
@@ -85,8 +88,10 @@ enum KeyRemapper {
 
     private static var matching: String { RemoteIdentity.hidutilMatching }
     private static let hidutilLock = NSLock()
-    /// install 前保存的设备原有映射（已剔除本进程自己的中转条目）。
-    /// nil = 尚未成功读取（uninstall 按现状写空映射）。
+    /// install 前保存的设备原有映射快照（已剔除本进程自己的中转条目）。
+    /// nil = 未持有快照（尚未读取或读取失败，或已在 uninstall 恢复时消费）。
+    /// 状态机：nil →(saveExistingMappingIfNeeded 成功)→ 持有 →(uninstall 恢复成功)→ nil。
+    /// 快照缺失时禁止 install（避免覆盖丢失第三方映射）；uninstall 按现状只剔除本程序条目。
     nonisolated(unsafe) private static var savedForeign: [(src: UInt64, dst: UInt64)]?
 
     /// 运行 hidutil，返回 (退出码==0, stdout)。启动失败/非零退出记日志。
@@ -146,17 +151,19 @@ enum KeyRemapper {
 
     /// 首次 install 前读取并保存设备现有映射。剔除本进程自己的中转条目
     /// （重复 install / 上次异常退出的残留不能被当成"原值"保存）。
-    private static func saveExistingMappingIfNeeded() {
-        guard savedForeign == nil else { return }
+    /// 返回 false = 读取/解析失败，快照未建立——调用方（install）必须放弃安装。
+    private static func saveExistingMappingIfNeeded() -> Bool {
+        guard savedForeign == nil else { return true }
         let r = runHidutil(["property", "--matching", matching, "--get", "UserKeyMapping"], capture: true)
         guard r.ok, let pairs = parseUserKeyMapping(r.output) else {
-            log?("读取设备现有 UserKeyMapping 失败或无法解析，uninstall 时将按空映射恢复")
-            return
+            log?("读取设备现有 UserKeyMapping 失败或无法解析，禁止安装（避免覆盖第三方映射）")
+            return false
         }
         let ours = Set(mappingTable.map { 0x700000000 + UInt64($0.src) })
         let foreign = pairs.filter { !ours.contains($0.src) }
         savedForeign = foreign
         if !foreign.isEmpty { log?("已保存设备原有 UserKeyMapping \(foreign.count) 条，退出时恢复") }
+        return true
     }
 
     private static func entryJSON(src: UInt64, dst: UInt64) -> String {
@@ -164,14 +171,18 @@ enum KeyRemapper {
     }
 
     /// 安装重映射（幂等）。保留设备原有的第三方映射条目共存。
+    /// 快照未能建立（现有映射读不到）时拒绝安装——绝不在未知现状上整表覆盖。
     @discardableResult
     static func install() -> Bool {
         hidutilLock.lock(); defer { hidutilLock.unlock() }
-        saveExistingMappingIfNeeded()
+        guard saveExistingMappingIfNeeded(), let foreign = savedForeign else {
+            log?("hidutil 映射安装跳过：无法确认设备现有映射（健康检查会重试）")
+            return false
+        }
         var entries = mappingTable.map {
             entryJSON(src: 0x700000000 + UInt64($0.src), dst: 0x700000000 + UInt64($0.dst))
         }
-        entries += (savedForeign ?? []).map { entryJSON(src: $0.src, dst: $0.dst) }
+        entries += foreign.map { entryJSON(src: $0.src, dst: $0.dst) }
         let ok = runHidutil(["property", "--matching", matching,
                              "--set", #"{"UserKeyMapping":[\#(entries.joined(separator: ","))]}"#]).ok
         if !ok { log?("hidutil 映射安装失败") }
@@ -203,21 +214,53 @@ enum KeyRemapper {
         return ok ? .cleaned(residual.count) : .cleanFailed
     }
 
+    /// 本程序全部中转条目的完整 (src,dst) 对（含静默表；self-test 构造样本用）。
+    static var expectedMappingPairs: [(src: UInt64, dst: UInt64)] {
+        mappingTable.map { (0x700000000 + UInt64($0.src), 0x700000000 + UInt64($0.dst)) }
+    }
+
+    /// 在位判据（纯函数，供 self-test）：本程序每条 (src,dst) 必须唯一在位且目标正确。
+    /// 同源重复条目或被第三方改到错误目标 → 不算在位（健康检查触发重装修复）。
+    static func mappingSatisfied(_ pairs: [(src: UInt64, dst: UInt64)]) -> Bool {
+        for entry in mappingTable {
+            let src = 0x700000000 + UInt64(entry.src)
+            let dst = 0x700000000 + UInt64(entry.dst)
+            let matches = pairs.filter { $0.src == src }
+            guard matches.count == 1, matches[0].dst == dst else { return false }
+        }
+        return true
+    }
+
     /// 只读查询：本程序全部中转条目是否在位（nil = 查询/解析失败）。
-    /// HealthMonitor 周期校验用，判据与 reinstall 相同（缺任何一条即缺失）。
+    /// HealthMonitor 周期校验用，判据见 mappingSatisfied（缺失/错目标/重复即不在位）。
     static func mappingPresent() -> Bool? {
         hidutilLock.lock(); defer { hidutilLock.unlock() }
         let r = runHidutil(["property", "--matching", matching, "--get", "UserKeyMapping"], capture: true)
         guard r.ok, let pairs = parseUserKeyMapping(r.output) else { return nil }
-        let present = Set(pairs.map(\.src))
-        return mappingTable.allSatisfy { present.contains(0x700000000 + UInt64($0.src)) }
+        return mappingSatisfied(pairs)
     }
 
-    /// 恢复设备原有映射（install 前保存的值；读取/解析失败时按空映射恢复，即现状行为）。
+    /// 恢复设备原有映射。持有快照 → 写回快照，成功后清除（防服务重启恢复过期状态）；
+    /// 无快照（读取曾失败/从未安装）→ 按设备现状只剔除本程序条目，绝不写空表。
     @discardableResult
     static func uninstall() -> Bool {
         hidutilLock.lock(); defer { hidutilLock.unlock() }
-        let entries = (savedForeign ?? []).map { entryJSON(src: $0.src, dst: $0.dst) }
+        if let foreign = savedForeign {
+            let entries = foreign.map { entryJSON(src: $0.src, dst: $0.dst) }
+            let ok = runHidutil(["property", "--matching", matching,
+                                 "--set", #"{"UserKeyMapping":[\#(entries.joined(separator: ","))]}"#]).ok
+            if ok { savedForeign = nil } else { log?("hidutil 映射恢复失败") }
+            return ok
+        }
+        // 无快照：等价残留清理——读现状、剔除本程序条目、保留第三方条目。
+        let r = runHidutil(["property", "--matching", matching, "--get", "UserKeyMapping"], capture: true)
+        guard r.ok, let pairs = parseUserKeyMapping(r.output) else {
+            log?("hidutil 映射恢复跳过：无快照且无法读取设备现状（不写空表）")
+            return false
+        }
+        let ours = Set(mappingTable.map { 0x700000000 + UInt64($0.src) })
+        let entries = pairs.filter { !ours.contains($0.src) }
+            .map { entryJSON(src: $0.src, dst: $0.dst) }
         let ok = runHidutil(["property", "--matching", matching,
                              "--set", #"{"UserKeyMapping":[\#(entries.joined(separator: ","))]}"#]).ok
         if !ok { log?("hidutil 映射恢复失败") }
@@ -236,7 +279,13 @@ final class TapEngine: @unchecked Sendable {
     weak var delegate: HIDEngineDelegate?
     /// 方向键分流的快照来源（MappingEngine）。nil 时方向键全走引擎路径（安全默认）。
     weak var router: MappingEngine?
+    /// hidutil 映射在位状态回调（HealthMonitor.setMappingInstalled 接线）。
+    /// tap 存活与映射在位是两个独立健康源，不再经 hidSeizeState 合并上报。
+    var onMappingState: ((Bool) -> Void)?
+    /// tap 与 run-loop source：生命周期操作（start/stop/暂停/重装/健康检查）全部
+    /// 串行在 healthQueue 上执行（start/stop 用 sync 投递），杜绝 stop 后残留重装。
     private var tap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
 
     /// 按压锁存（tap 回调线程写，健康检查/复位线程可能清空，锁保护）。
     private struct PressState {
@@ -275,29 +324,47 @@ final class TapEngine: @unchecked Sendable {
             },
             userInfo: selfPtr) else {
             delegate?.hidLog("TAP 创建失败（需辅助功能权限），清理可能残留的 hidutil 映射")
-            KeyRemapper.uninstall()   // 上次异常退出可能残留映射；tap 起不来绝不留映射
+            // 上次异常退出可能残留映射；tap 起不来绝不留映射。
+            // uninstall 此时无快照——按现状只剔除本程序条目，不动第三方映射。
+            healthQueue.sync { _ = KeyRemapper.uninstall() }
             delegate?.hidSeizeState(false)
             return
         }
-        self.tap = tap
         let rls = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), rls, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        let installed = KeyRemapper.install()
-        stateLock.withLock { $0.mappingInstalled = installed }
-        startHealthTimer()
+        let installed: Bool = healthQueue.sync {
+            self.tap = tap
+            self.runLoopSource = rls
+            let ok = KeyRemapper.install()
+            stateLock.withLock { $0.mappingInstalled = ok }
+            startHealthTimer()
+            return ok
+        }
+        onMappingState?(installed)
         delegate?.hidSeizeState(true)
         delegate?.hidLog(installed ? "TAP 就绪，hidutil 中转映射已安装"
                                    : "TAP 就绪，但 hidutil 映射安装失败（中转键位不生效）")
     }
 
     func stop() {
-        healthTimer?.cancel()
-        healthTimer = nil
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
-        tap = nil
-        KeyRemapper.uninstall()
-        stateLock.withLock { $0 = PressState() }
+        healthQueue.sync {
+            healthTimer?.cancel()
+            healthTimer = nil
+            if let tap {
+                CGEvent.tapEnable(tap: tap, enable: false)
+                CFMachPortInvalidate(tap)
+            }
+            if let runLoopSource {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+            }
+            tap = nil
+            runLoopSource = nil
+            KeyRemapper.uninstall()
+            releaseNativeHeld()
+            stateLock.withLock { $0 = PressState() }
+        }
+        onMappingState?(false)
     }
 
     /// 「tap 恢复后是否允许自动重装映射」的纯判据（healthCheck 用，self-test 直接测）：
@@ -320,15 +387,15 @@ final class TapEngine: @unchecked Sendable {
             guard changed else { return }
             if suspended {
                 KeyRemapper.uninstall()
-                self.stateLock.withLock { st in
-                    st.mappingInstalled = false
-                    st.nativeHeld.removeAll()
-                    st.okDown = false
-                }
+                self.stateLock.withLock { $0.mappingInstalled = false }
+                self.releaseNativeHeld()
+                self.stateLock.withLock { $0.okDown = false }
+                self.onMappingState?(false)
                 self.delegate?.hidLog("遥控已暂停：hidutil 映射已卸载（按键回系统原生）")
             } else if self.tap != nil {
                 let ok = KeyRemapper.install()
                 self.stateLock.withLock { $0.mappingInstalled = ok }
+                self.onMappingState?(ok)
                 self.delegate?.hidLog(ok ? "遥控已恢复：hidutil 映射已重装"
                                          : "遥控恢复：hidutil 映射重装失败（健康检查会重试）")
             }
@@ -346,17 +413,36 @@ final class TapEngine: @unchecked Sendable {
             }
             let ok = KeyRemapper.install()
             self.stateLock.withLock { $0.mappingInstalled = ok }
+            self.onMappingState?(ok)
             self.delegate?.hidLog(ok ? "hidutil 映射已重装（\(reason)）"
                                      : "hidutil 映射重装失败（\(reason)）")
         }
     }
 
     /// 清空按压锁存（OK 物理态 / 原生按住方向）。设备移除、系统睡眠、tap 失效恢复时调用。
+    /// 已透传给系统的「原生改写放行」方向键此刻可能仍处于按下态——为每个补发原生 keyUp，
+    /// 否则系统会永久卡住方向键（tap 失效/暂停发生在按住期间的场景）。
     func resetPressState() {
-        stateLock.withLock { st in
+        releaseNativeHeld()
+        stateLock.withLock { $0.okDown = false }
+    }
+
+    /// 锁内取出 nativeHeld 快照并清空，锁外为每个键合成原生 keyUp。
+    private func releaseNativeHeld() {
+        let held = stateLock.withLock { st -> Set<RemoteKey> in
+            let h = st.nativeHeld
             st.nativeHeld.removeAll()
-            st.okDown = false
+            return h
         }
+        guard !held.isEmpty else { return }
+        let src = CGEventSource(stateID: .hidSystemState)
+        for key in held {
+            guard let code = KeyRemapper.nativeArrowKeycode[key],
+                  let ev = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(code),
+                                   keyDown: false) else { continue }
+            ev.post(tap: .cghidEventTap)
+        }
+        delegate?.hidLog("已为按住中的原生方向键补发 keyUp：\(held.map(\.rawValue).joined(separator: ","))")
     }
 
     // MARK: - 失效安全
@@ -380,6 +466,7 @@ final class TapEngine: @unchecked Sendable {
                                         mappingInstalled: installed),
                KeyRemapper.install() {
                 stateLock.withLock { $0.mappingInstalled = true }
+                onMappingState?(true)
                 delegate?.hidLog("健康检查：TAP 已恢复，hidutil 映射已重装")
             }
             return
@@ -390,9 +477,11 @@ final class TapEngine: @unchecked Sendable {
             delegate?.hidLog("健康检查：TAP 已重新启用")
             resetPressState()
             router?.resetInputState(reason: "健康检查恢复 tap")
+            delegate?.hidSeizeState(true)   // 失效期间上报过 false，恢复必须对称上报
         } else if installed {
             KeyRemapper.uninstall()
             stateLock.withLock { $0.mappingInstalled = false }
+            onMappingState?(false)
             resetPressState()
             router?.resetInputState(reason: "tap 失效")
             delegate?.hidLog("健康检查：TAP 无法恢复，已卸载 hidutil 映射防止中转键泄漏（恢复后自动重装）")
@@ -401,7 +490,8 @@ final class TapEngine: @unchecked Sendable {
     }
 
     /// tap 被系统禁用（超时/用户输入）后的恢复：重启成功则复位输入状态
-    /// （禁用期间可能丢 keyUp）；失败立即卸载映射。
+    /// （禁用期间可能丢 keyUp）；失败立即卸载映射。在 healthQueue 上执行
+    ///（与 stop/暂停/重装串行互斥；tap 回调线程只投递不直接操作生命周期）。
     private func recoverDisabledTap(_ reason: String) {
         guard let tap else { return }
         CGEvent.tapEnable(tap: tap, enable: true)
@@ -409,10 +499,12 @@ final class TapEngine: @unchecked Sendable {
             delegate?.hidLog("TAP 被禁用（\(reason)），已重新启用")
             resetPressState()
             router?.resetInputState(reason: "tap 重启")
+            delegate?.hidSeizeState(true)
         } else {
             delegate?.hidLog("TAP 被禁用（\(reason)）且重启失败，卸载 hidutil 映射防止中转键泄漏")
             KeyRemapper.uninstall()
             stateLock.withLock { $0.mappingInstalled = false }
+            onMappingState?(false)
             resetPressState()
             router?.resetInputState(reason: "tap 失效")
             delegate?.hidSeizeState(false)
@@ -423,7 +515,8 @@ final class TapEngine: @unchecked Sendable {
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            recoverDisabledTap(type == .tapDisabledByTimeout ? "超时" : "用户输入")
+            let reason = type == .tapDisabledByTimeout ? "超时" : "用户输入"
+            healthQueue.async { [weak self] in self?.recoverDisabledTap(reason) }
             return Unmanaged.passUnretained(event)
         }
         let keycode = event.getIntegerValueField(.keyboardEventKeycode)
@@ -448,6 +541,7 @@ final class TapEngine: @unchecked Sendable {
                 if type == .keyDown, !isRepeat {
                     var route = router?.tapRoute ?? TapRoute()
                     route.okDown = st.okDown
+                    route.mouseCapture = MouseMode.shared.isActive
                     let v = KeyRemapper.directionVerdict(key: key, isRepeat: false, route: route)!
                     if case .rewrite = v { st.nativeHeld.insert(key) } else { st.nativeHeld.remove(key) }
                     return v

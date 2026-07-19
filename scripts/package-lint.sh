@@ -10,13 +10,21 @@
 #   6. DR 一致性：重新跑一次 package.sh（重编译+重签名），两次 DR 输出必须逐字一致
 #      —— 这是 "TCC 授权跨重编译存活" 的静态等价判据（codex-phase0 必查项）
 #
-# 用法：scripts/package-lint.sh [app路径]   （缺省 dist/MiRemote.app）
+# 用法：scripts/package-lint.sh
 #       SKIP_DR_CONSISTENCY=1 可跳过第 6 项（避免二次全量构建）
+#
+# 检查对象固定为 dist/MiRemote.app：zip/DMG 校验与 DR 二次构建全部围绕
+# package.sh 的默认产物；曾经的自定义路径参数会让 DR1/DR2 读同一个未变文件、
+# zip/DMG 检查与被检 app 脱钩，稳定性检查虚假通过——已移除。
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP="${1:-dist/MiRemote.app}"
+if [ "$#" -gt 0 ]; then
+    echo "❌ package-lint.sh 不接受参数（检查对象固定为 dist/MiRemote.app）" >&2
+    exit 2
+fi
+APP="dist/MiRemote.app"
 FAIL=0
 note() { echo "  $1"; }
 pass() { echo "PASS  $1"; }

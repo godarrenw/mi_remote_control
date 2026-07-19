@@ -24,6 +24,12 @@ final class MacroEngine: @unchecked Sendable {
     private let lock = NSLock()
     private var running = false
 
+    /// 是否有宏在执行中（--run-action 等待宏完成再退出用）。
+    var isRunning: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return running
+    }
+
     /// 触发一段宏（异步，不阻塞调用方）。执行中重入直接忽略。
     func run(_ steps: [MacroStep], runner: ActionRunning) {
         lock.lock()
@@ -95,7 +101,9 @@ private struct LiveMacroPrimitives: MacroPrimitives {
     }
 
     func wait(ms: Int) {
+        // 解码层已把 delay 限制在 0...60_000；这里仍做饱和转换兜底（防负数/
+        // 乘法溢出 trap——任意来源的 Action 不能让整个进程崩溃）。
         guard ms > 0 else { return }
-        usleep(useconds_t(ms) * 1000)
+        usleep(min(useconds_t(clamping: ms), 60_000) * 1000)
     }
 }

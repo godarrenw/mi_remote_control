@@ -127,9 +127,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         guard let button = statusItem?.button else { return }
         let p = NSPopover()
         p.behavior = .transient
-        p.appearance = NSApp.effectiveAppearance
         p.delegate = self
-        p.contentViewController = NSHostingController(
+        // 外观跟随 App（NSApp.appearance 覆盖优先）：popover 从状态栏窗口继承的外观
+        // 不一定等于 App 外观，显式下发到 popover 与内容视图两层，浅色下必须是浅色面板。
+        let appearance = NSApp.appearance ?? NSApp.effectiveAppearance
+        p.appearance = appearance
+        let hosting = NSHostingController(
             rootView: StatusPanelView(
                 onOpenWindow: { [weak self] in
                     self?.popover?.performClose(nil)
@@ -142,6 +145,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 },
                 onQuit: { [weak self] in self?.onQuit?() })
                 .environmentObject(model))
+        hosting.view.appearance = appearance
+        p.contentViewController = hosting
         popover = p
         p.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
@@ -229,6 +234,8 @@ struct StatusPanelView: View {
         }
         .padding(Spacing.rowH)
         .frame(width: 300)
+        // 不透明系统底色：外观明确分离浅/深（vibrant 材质会采样身后桌面，浅色下可能显脏）
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { model.syncRemoteSuspended() }
     }
 

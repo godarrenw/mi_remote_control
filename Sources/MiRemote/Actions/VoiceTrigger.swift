@@ -73,8 +73,8 @@ enum VoiceTrigger {
         return nil
     }
 
-    private static func switchIMEIfNeeded() {
-        guard let prefix = config.imeBundlePrefix else { return }
+    private static func switchIMEIfNeeded(_ cfg: VoiceTriggerConfig) {
+        guard let prefix = cfg.imeBundlePrefix else { return }
         let didSwitch = onMain {
             guard let target = findInputSource(bundlePrefix: prefix) else {
                 let hint = "未找到目标输入法（\(prefix)*），跳过切换、触发键照常发送。可在 config.json 的 "
@@ -91,9 +91,15 @@ enum VoiceTrigger {
         if didSwitch { usleep(150_000) } // 在工作队列等待输入法完成切换，不阻塞主线程
     }
 
-    private static func restoreIMEIfNeeded() {
-        guard config.imeBundlePrefix != nil else { return }
+    /// IME 恢复任务的代际令牌：每次 begin 自增，作废前一会话在途的 4s 延迟恢复
+    /// （否则旧恢复会在新会话中途切回旧输入法并清掉保存状态）。仅在 queue 上读写。
+    private static var restoreGeneration = 0
+
+    private static func restoreIMEIfNeeded(_ cfg: VoiceTriggerConfig) {
+        guard cfg.imeBundlePrefix != nil else { return }
+        let gen = restoreGeneration
         queue.asyncAfter(deadline: .now() + 4.0) { // 等识别文本完全上屏再还原，过早切走会把语音条孤儿化
+            guard gen == restoreGeneration else { return } // 新会话已开始，本次恢复作废
             onMain {
                 if let saved = savedInputSource {
                     TISSelectInputSource(saved)
@@ -105,7 +111,7 @@ enum VoiceTrigger {
 
     // MARK: - 按键合成
 
-    private static func post(down: Bool) {
+    private static func post(down: Bool, config: VoiceTriggerConfig) {
         guard let (keycode, flag, deviceBit) = VoiceTriggerConfig.keyTable[config.keyName] else {
             FileHandle.standardError.write("未知触发键名: \(config.keyName)\n".data(using: .utf8)!)
             return
@@ -126,10 +132,10 @@ enum VoiceTrigger {
         ev.post(tap: .cghidEventTap)
     }
 
-    private static func tap() {
-        post(down: true)
+    private static func tap(_ cfg: VoiceTriggerConfig) {
+        post(down: true, config: cfg)
         usleep(25_000)
-        post(down: false)
+        post(down: false, config: cfg)
     }
 
     // MARK: - 对外接口（异步，不阻塞 BLE queue）
@@ -144,26 +150,41 @@ enum VoiceTrigger {
     private static var releaseWork: DispatchWorkItem?
     private static let minHoldMs: UInt64 = 1000
     private static let releaseDebounceMs = 250
+    /// 本次会话锁存的配置：keyDown 用哪份配置发出，keyUp 就必须用同一份对称释放。
+    /// 快速重启语音时若切换了 App/触发键/模式，绝不能用新配置给旧键发 keyUp
+    ///（否则旧 Option/Cmd 永久粘住）。仅在 queue 上读写。
+    private static var sessionConfig: VoiceTriggerConfig?
 
     /// 遥控器语音键按下
     static func begin(config newConfig: VoiceTriggerConfig? = nil) {
         queue.async {
-            if let newConfig { config = newConfig }
+            let cfg = newConfig ?? config
+            restoreGeneration &+= 1          // 作废前一会话在途的 IME 延迟恢复
             releaseWork?.cancel()
             releaseWork = nil
-            switch config.mode {
+            // 旧 hold 会话的键仍按着且配置已变：先用旧配置对称释放，再开新会话。
+            if isDown, let old = sessionConfig, old != cfg {
+                post(down: false, config: old)
+                isDown = false
+                sessionConfig = nil
+            }
+            config = cfg
+            switch cfg.mode {
             case .hold:
-                if isDown { return } // 抖动合并：仍按着，无需重按
-                switchIMEIfNeeded()
-                post(down: true)
+                if isDown { return } // 抖动合并：同配置仍按着，无需重按
+                switchIMEIfNeeded(cfg)
+                post(down: true, config: cfg)
                 isDown = true
+                sessionConfig = cfg
                 downAtNs = DispatchTime.now().uptimeNanoseconds
             case .tap:
-                switchIMEIfNeeded()
-                tap()
+                switchIMEIfNeeded(cfg)
+                sessionConfig = cfg
+                tap(cfg)
             case .double:
-                switchIMEIfNeeded()
-                tap(); usleep(80_000); tap()
+                switchIMEIfNeeded(cfg)
+                sessionConfig = cfg
+                tap(cfg); usleep(80_000); tap(cfg)
             }
         }
     }
@@ -171,22 +192,25 @@ enum VoiceTrigger {
     /// 遥控器语音键松开
     static func end() {
         queue.async {
-            switch config.mode {
+            let cfg = sessionConfig ?? config   // 一律按会话锁存配置对称收尾
+            switch cfg.mode {
             case .hold:
                 guard isDown else { return }
                 let heldMs = (DispatchTime.now().uptimeNanoseconds - downAtNs) / 1_000_000
                 let extraForMinHold = heldMs >= minHoldMs ? 0 : Int(minHoldMs - heldMs)
                 let wait = max(extraForMinHold, releaseDebounceMs)
                 let work = DispatchWorkItem {
-                    post(down: false)
+                    post(down: false, config: cfg)
                     isDown = false
-                    restoreIMEIfNeeded()
+                    sessionConfig = nil
+                    restoreIMEIfNeeded(cfg)
                 }
                 releaseWork = work
                 queue.asyncAfter(deadline: .now() + .milliseconds(wait), execute: work)
             case .tap, .double:
-                tap()
-                restoreIMEIfNeeded()
+                tap(cfg)
+                sessionConfig = nil
+                restoreIMEIfNeeded(cfg)
             }
         }
     }

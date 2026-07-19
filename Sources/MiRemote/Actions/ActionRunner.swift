@@ -2,6 +2,45 @@ import Foundation
 import AppKit
 import CoreGraphics
 
+/// shell 动作派生的活动进程组全局登记表：正常退出/服务 stop 时对全部活动组
+/// TERM→KILL 清扫，保证「shell 命令绝不跑过主程序生命周期」的承诺。
+final class ShellProcessRegistry: @unchecked Sendable {
+    static let shared = ShellProcessRegistry()
+
+    private let lock = NSLock()
+    private var groups: Set<pid_t> = []
+
+    var activeCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return groups.count
+    }
+
+    func register(_ pgid: pid_t) {
+        lock.lock(); groups.insert(pgid); lock.unlock()
+    }
+
+    func unregister(_ pgid: pid_t) {
+        lock.lock(); groups.remove(pgid); lock.unlock()
+    }
+
+    /// 对全部活动组 TERM，最多等 gracePeriod 秒（100ms 轮询、组死光即提前返回），
+    /// 幸存者 KILL。同步有界——stop/退出路径可直接调用。
+    func terminateAll(gracePeriod: TimeInterval = 2) {
+        let snapshot: Set<pid_t> = {
+            lock.lock(); defer { lock.unlock() }
+            return groups
+        }()
+        guard !snapshot.isEmpty else { return }
+        for g in snapshot { kill(-g, SIGTERM) }
+        let deadline = Date().addingTimeInterval(gracePeriod)
+        while Date() < deadline, snapshot.contains(where: { kill(-$0, 0) == 0 }) {
+            usleep(100_000)
+        }
+        for g in snapshot where kill(-g, 0) == 0 { kill(-g, SIGKILL) }
+        lock.lock(); groups.subtract(snapshot); lock.unlock()
+    }
+}
+
 /// 动作执行器：把 Action 落成真正的系统事件/命令。
 /// MappingEngine 在主线程调用 run(_:)。语音/层动作不由此处理（映射层负责）。
 final class ActionRunner: ActionRunning, @unchecked Sendable {
@@ -225,15 +264,21 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
         argv.forEach { free($0) }
         guard rc == 0 else { log("shell spawn failed rc=\(rc)"); return }
         let group = pid
+        ShellProcessRegistry.shared.register(group)
         DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
             // 进程组仍存活才发信号（组完全退出后 kill 返回 ESRCH，无害但省掉误杀窗口）。
-            guard kill(-group, 0) == 0 else { return }
+            guard kill(-group, 0) == 0 else { ShellProcessRegistry.shared.unregister(group); return }
             kill(-group, SIGTERM)
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { kill(-group, SIGKILL) }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                if kill(-group, 0) == 0 { kill(-group, SIGKILL) }
+                ShellProcessRegistry.shared.unregister(group)
+            }
         }
         DispatchQueue.global().async {
             var status: Int32 = 0
-            waitpid(pid, &status, 0)   // 回收 zsh，避免僵尸进程
+            while waitpid(pid, &status, 0) == -1 && errno == EINTR {}   // 回收 zsh，EINTR 重试
+            // zsh 已退但组内可能还有后台孙进程——组死光才注销，否则留给超时清理注销。
+            if kill(-group, 0) != 0 { ShellProcessRegistry.shared.unregister(group) }
         }
     }
 

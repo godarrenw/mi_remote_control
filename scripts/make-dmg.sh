@@ -25,12 +25,31 @@ ALLOW_UNSIGNED=0
 [ -d "$APP" ] || { echo "❌ 找不到 $APP，先跑 scripts/package.sh（或 --unsigned 预览需自行放置 .app）" >&2; exit 1; }
 
 # ---- 签名闸门：正式流程要求有效签名；--unsigned 显式跳过 ----
+# check_dr <app路径>：Designated Requirement 必须锚定 certificate leaf 且不含 cdhash。
+# codesign --verify --strict 对 ad-hoc 签名同样放行——单靠它不够，正式通道必须查 DR，
+# 否则 package.sh --unsigned 产物可被无参 make-dmg 包装成不带 -unsigned 的"正式"DMG。
+check_dr() {
+    local dr
+    dr="$(codesign -d -r- "$1" 2>&1 | grep '^designated' || true)"
+    if ! echo "$dr" | grep -q 'certificate leaf'; then
+        echo "❌ 错误：$1 的 DR 未锚定 certificate leaf（当前: ${dr:-<空>}）。" >&2
+        echo "   疑似 ad-hoc/未签名 app——正式 DMG 拒绝打包；开发预览请用 --unsigned。" >&2
+        return 1
+    fi
+    if echo "$dr" | grep -q 'cdhash'; then
+        echo "❌ 错误：$1 的 DR 含 cdhash——重编译必掉 TCC 授权，正式 DMG 拒绝打包。" >&2
+        return 1
+    fi
+    return 0
+}
+
 if [ "$ALLOW_UNSIGNED" = "0" ]; then
     if ! codesign --verify --strict "$APP" 2>/dev/null; then
         echo "❌ 错误：$APP 签名无效。正式 DMG 必须打包已签名的 app。" >&2
         echo "   先跑 scripts/package.sh 生成签名 app；开发预览可用 --unsigned 显式降级。" >&2
         exit 1
     fi
+    check_dr "$APP" || exit 1
 else
     echo "⚠️  --unsigned：跳过签名校验，产物仅供开发预览，切勿分发。"
 fi

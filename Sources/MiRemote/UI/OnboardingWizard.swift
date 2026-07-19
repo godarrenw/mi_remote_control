@@ -56,6 +56,8 @@ struct OnboardingWizard: View {
     @State private var ax: EnvCheckState = .unknown
     @State private var im: EnvCheckState = .unknown
     @State private var bt: EnvCheckState = .unknown
+    /// 必须强持有到 CoreBluetooth 回调返回；瞬时创建后立即释放会让首次授权弹窗不可靠。
+    @State private var bluetoothPermissionManager: CBCentralManager?
     @State private var blackhole: EnvCheckState = .unknown
     @State private var remote: EnvCheckState = .unknown
     @State private var pollTimer: Timer?
@@ -153,9 +155,9 @@ struct OnboardingWizard: View {
                 .font(.caption).foregroundStyle(.secondary)
             PermissionCheckRow(icon: "antenna.radiowaves.left.and.right", title: "蓝牙",
                                explain: "连接遥控器、接收语音音频",
-                               state: bt) {
-                // 触发系统蓝牙授权（创建 central 即弹框）；已授权则无感
-                _ = CBCentralManager()
+                               state: bt,
+                               actionTitle: bt == .denied ? "去系统设置" : "去授权") {
+                requestBluetoothPermission()
             }
             PermissionCheckRow(icon: "keyboard", title: "输入监控",
                                explain: "读取遥控器按键事件",
@@ -320,6 +322,26 @@ struct OnboardingWizard: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 if step == 1 { step = 2 }
             }
+        }
+    }
+
+    /// 首次请求由一个被 View 强持有的 central 触发；明确拒绝后 macOS 不会再次弹框，
+    /// 此时直接带用户去「隐私与安全性 → 蓝牙」重新开启。
+    private func requestBluetoothPermission() {
+        switch CBCentralManager.authorization {
+        case .notDetermined:
+            if bluetoothPermissionManager == nil {
+                bluetoothPermissionManager = CBCentralManager(delegate: nil, queue: .main)
+            }
+        case .denied, .restricted:
+            if let url = URL(string:
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") {
+                NSWorkspace.shared.open(url)
+            }
+        case .allowedAlways:
+            refresh()
+        @unknown default:
+            refresh()
         }
     }
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreBluetooth
 
 enum SidebarItem: String, CaseIterable, Identifiable {
     case mapping, profile, voice, general
@@ -37,11 +38,11 @@ struct RootView: View {
                 // 侧栏头部
                 HStack(spacing: Spacing.intra) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: Radius.badge)
                             .fill(LinearGradient(colors: [Color(white: 0.28), Color(white: 0.12)],
                                                  startPoint: .top, endPoint: .bottom))
                         Image(systemName: "av.remote")
-                            .font(.system(size: 17, weight: .medium))
+                            .font(.title3.weight(.medium))
                             .foregroundStyle(.white)
                     }
                     .frame(width: 36, height: 36)
@@ -85,7 +86,13 @@ struct RootView: View {
         .sheet(isPresented: $showHealthCheck) { HealthCheckSheet() }
         .sheet(isPresented: $showReauth) { ReauthSheet() }
         .onAppear {
-            if !model.hasCompletedOnboarding {
+            // 每次进程启动都按当前真实权限重检。完成过向导只代表用户走完流程，
+            // 不能掩盖后来拒绝/撤销/签名变化导致的失权。
+            if PermissionGate.needsOnboarding(
+                hasCompletedOnboarding: model.hasCompletedOnboarding,
+                bluetooth: CBCentralManager.authorization,
+                accessibility: EnvironmentCheck.accessibility().state,
+                inputMonitoring: EnvironmentCheck.inputMonitoring().state) {
                 showOnboarding = true
             } else if !PermissionMemory.lostPermissions().isEmpty {
                 // 升级失权（上次有授权、这次没了）→ 自动弹精简重授权 sheet
@@ -106,6 +113,19 @@ struct RootView: View {
         case 65..<90: return "battery.75percent"
         default:      return "battery.100percent"
         }
+    }
+}
+
+/// 启动权限门槛的纯判定，避免 UI 生命周期把「向导已完成」误当成「权限仍有效」。
+enum PermissionGate {
+    static func needsOnboarding(hasCompletedOnboarding: Bool,
+                                bluetooth: CBManagerAuthorization,
+                                accessibility: EnvCheckState,
+                                inputMonitoring: EnvCheckState) -> Bool {
+        !hasCompletedOnboarding
+            || bluetooth != .allowedAlways
+            || accessibility != .granted
+            || inputMonitoring != .granted
     }
 }
 

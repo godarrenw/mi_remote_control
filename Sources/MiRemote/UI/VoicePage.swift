@@ -73,7 +73,7 @@ struct VoicePage: View {
                                     }
                                 }
                                 .labelsHidden()
-                                .frame(width: 250)
+                                .frame(width: 250, alignment: .leading)
                                 Button { showAddApp = true } label: {
                                     Image(systemName: "plus")
                                 }
@@ -87,7 +87,7 @@ struct VoicePage: View {
                                     ForEach(triggerKeys, id: \.0) { item in Text(item.1).tag(item.0) }
                                 }
                                 .labelsHidden()
-                                .frame(width: 250)
+                                .frame(width: 250, alignment: .leading)
                                 Color.clear.frame(width: 16, height: 1)
                             }
                             GridRow {
@@ -99,7 +99,7 @@ struct VoicePage: View {
                                     Text("双击开始 / 单击结束").tag("double")
                                 }
                                 .labelsHidden()
-                                .frame(width: 250)
+                                .frame(width: 250, alignment: .leading)
                                 Color.clear.frame(width: 16, height: 1)
                             }
                             GridRow {
@@ -110,7 +110,7 @@ struct VoicePage: View {
                                     Text("独立语音 App（不切输入法）").tag("standalone")
                                 }
                                 .labelsHidden()
-                                .frame(width: 250)
+                                .frame(width: 250, alignment: .leading)
                                 Color.clear.frame(width: 16, height: 1)
                             }
                         }
@@ -355,7 +355,7 @@ struct LevelMeterView: View {
             }
         }
         .frame(height: 52, alignment: .bottom)
-        .animation(.linear(duration: 0.08), value: bars)
+        .animation(Motion.meter, value: bars)
     }
 
     private func color(for level: Float) -> Color {

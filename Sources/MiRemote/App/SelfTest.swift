@@ -1,4 +1,5 @@
 import Foundation
+import CoreBluetooth
 
 // ponytail: CLT 不带 XCTest/Swift Testing，测试编进二进制用 --self-test 跑；装了 Xcode 后可迁回 testTarget
 
@@ -497,6 +498,81 @@ enum SelfTest {
                    "条目缺 Dst → nil（解析失败）")
         }
 
+        // 终审-1. hidutil 映射在位判据：完整 (src,dst) 对比（缺失/错目标/同源重复都不算在位）。
+        do {
+            let good = KeyRemapper.expectedMappingPairs
+            expect(KeyRemapper.mappingSatisfied(good), "映射在位：完整正确表 → true")
+            expect(KeyRemapper.mappingSatisfied(good + [(0x700000000 + 0x999, 0x700000000 + 0x998)]),
+                   "映射在位：额外第三方条目不影响判定")
+            expect(!KeyRemapper.mappingSatisfied(Array(good.dropFirst())),
+                   "映射在位：缺一条 → false")
+            var wrongDst = good
+            wrongDst[0].dst &+= 1
+            expect(!KeyRemapper.mappingSatisfied(wrongDst),
+                   "映射在位：目标被改错 → false（健康检查会修复）")
+            expect(!KeyRemapper.mappingSatisfied(good + [(good[0].src, good[0].dst &+ 1)]),
+                   "映射在位：同源冲突重复条目 → false")
+        }
+
+        // 终审-2. 单实例锁 owner 信息解析（GUI/CLI 分流提示的判定依据）。
+        do {
+            let owner = HealthMonitor.parseLockOwner(Data(#"{"pid":1234,"mode":"cli"}"#.utf8))
+            expect(owner == HealthMonitor.LockOwner(pid: 1234, mode: "cli"), "锁 owner JSON 解析")
+            expect(HealthMonitor.parseLockOwner(Data()) == nil, "锁 owner 空内容 → nil")
+            expect(HealthMonitor.parseLockOwner(Data("garbage".utf8)) == nil, "锁 owner 坏内容 → nil")
+            if let data = try? JSONEncoder().encode(HealthMonitor.LockOwner(pid: getpid(), mode: "gui")) {
+                expect(HealthMonitor.parseLockOwner(data)?.mode == "gui", "锁 owner 编码往返")
+            } else { expect(false, "锁 owner 编码往返") }
+        }
+
+        // 终审-3. 健康态三态化：映射查询失败 ≠ 缺失（保留旧值 + degraded 提示）。
+        do {
+            var s = HealthSources(keysEnabled: true, bleConnected: true, tapAlive: true,
+                                  mappingInstalled: true, accessibilityGranted: true,
+                                  inputMonitoringGranted: true)
+            s.mappingQueryFailed = true
+            if case .degraded(let why) = HealthMonitor.computeOverall(s) {
+                expect(why.count == 1 && why[0].contains("查询失败"),
+                       "健康态：查询失败 → degraded 提示（映射仍按在位算）", "\(why)")
+            } else {
+                expect(false, "健康态：查询失败应为 degraded",
+                       HealthMonitor.describe(HealthMonitor.computeOverall(s)))
+            }
+            s.suspended = true
+            if case .degraded(let why) = HealthMonitor.computeOverall(s) {
+                expect(why.allSatisfy { !$0.contains("查询失败") }, "健康态：暂停期间不报查询失败", "\(why)")
+            }
+        }
+
+        // 终审-4. 方向键分流：鼠标模式捕获态 → 吞给引擎（MouseMode 消费），autorepeat 吞弃。
+        do {
+            var r = TapRoute()
+            r.nativeDirections = [.up, .down, .left, .right]
+            expect(KeyRemapper.directionVerdict(key: .up, isRepeat: false, route: r) == .rewrite(126),
+                   "鼠标模式关闭：方向仍原生改写")
+            r.mouseCapture = true
+            expect(KeyRemapper.directionVerdict(key: .up, isRepeat: false, route: r) == .engine,
+                   "鼠标模式：方向 → engine")
+            expect(KeyRemapper.directionVerdict(key: .up, isRepeat: true, route: r) == .drop,
+                   "鼠标模式：autorepeat → drop")
+            var ui = r
+            ui.uiCapture = true
+            expect(KeyRemapper.directionVerdict(key: .up, isRepeat: false, route: ui) == .engine,
+                   "浮层捕获优先级不受鼠标位影响")
+        }
+
+        // 终审-5. 宏 delay 解码限界：负数拒绝、超大 clamp 到 60s（防 useconds_t trap）。
+        do {
+            let d = JSONDecoder()
+            expect((try? d.decode(MacroStep.self, from: Data(#"{"type":"delay","ms":-5}"#.utf8))) == nil,
+                   "宏 delay 负数解码拒绝")
+            expect((try? d.decode(MacroStep.self, from: Data(#"{"type":"delay","ms":99999999}"#.utf8)))
+                       == .delay(ms: MacroStep.maxDelayMs),
+                   "宏 delay 超大值 clamp 到上限")
+            expect((try? d.decode(MacroStep.self, from: Data(#"{"type":"delay","ms":0}"#.utf8)))
+                       == .delay(ms: 0), "宏 delay 0 合法")
+        }
+
         // 加固-3. resetInputState：清瞬时层/OK 物理态/在途定时器（设备移除/睡眠/tap 失效恢复路径）
         expect(MappingEngine.resetSelfCheck(), "MappingEngine resetInputState 自测")
         expect(MappingEngine.escapeHatchSelfCheck(), "全局逃生键（长按菜单 1.5s）自测")
@@ -549,6 +625,23 @@ enum SelfTest {
             expect((rc.state == .granted || rc.state == .denied)
                    && rc.guideURL?.scheme == "x-apple.systempreferences",
                    "EnvCheck 遥控器枚举可调用+蓝牙面板URL", stateTag(rc.state))
+
+            expect(!PermissionGate.needsOnboarding(
+                hasCompletedOnboarding: true, bluetooth: .allowedAlways,
+                accessibility: .granted, inputMonitoring: .granted),
+                "启动权限门槛：向导完成且三项授权齐全 → 不弹")
+            expect(PermissionGate.needsOnboarding(
+                hasCompletedOnboarding: true, bluetooth: .denied,
+                accessibility: .granted, inputMonitoring: .granted),
+                "启动权限门槛：蓝牙撤权 → 重弹向导")
+            expect(PermissionGate.needsOnboarding(
+                hasCompletedOnboarding: true, bluetooth: .allowedAlways,
+                accessibility: .denied, inputMonitoring: .granted),
+                "启动权限门槛：辅助功能撤权 → 重弹向导")
+            expect(PermissionGate.needsOnboarding(
+                hasCompletedOnboarding: false, bluetooth: .allowedAlways,
+                accessibility: .granted, inputMonitoring: .granted),
+                "启动权限门槛：首次启动 → 弹向导")
         }
 
         // 稳定性-1. HealthMonitor.computeOverall 四源汇聚纯逻辑

@@ -85,14 +85,12 @@ struct ProfilePage: View {
     @ViewBuilder
     private func profileRow(_ bundle: String) -> some View {
         let overrides = model.config.profiles[bundle] ?? [:]
-        let names = overrides.keys.compactMap { RemoteKey(rawValue: $0) }.map { KeyDisplay.badge($0) }
         // 整行可点进详情；删除只在 hover 时出现（系统设置语汇：行尾只留 chevron），也可右键删除
         HStack(spacing: Spacing.intra) {
             appIcon(bundle)
             VStack(alignment: .leading, spacing: 1) {
                 Text(profileDisplayName(bundle)).font(.body)
-                Text("继承全局 · 已覆盖 \(overrides.count) 项" +
-                     (names.isEmpty ? "" : "（\(names.prefix(5).joined(separator: "、"))\(names.count > 5 ? "…" : "")）"))
+                Text(overrides.isEmpty ? "全部继承全局" : "已覆盖 \(overrides.count) 个键 · 其余继承全局")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()

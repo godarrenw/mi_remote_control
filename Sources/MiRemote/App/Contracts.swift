@@ -149,11 +149,21 @@ enum MacroStep: Codable, Equatable {
     case delay(ms: Int)
     case text(String)
 
+    /// 单步延时上限（配置来源任意，负数/超大值不能进执行层：
+    /// useconds_t 负数转换或乘法溢出会 trap，一个坏配置就能崩掉整个进程）。
+    static let maxDelayMs = 60_000
+
     private enum K: String, CodingKey { case type, ms, value }
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .type) {
-        case "delay": self = .delay(ms: try c.decode(Int.self, forKey: .ms))
+        case "delay":
+            let ms = try c.decode(Int.self, forKey: .ms)
+            guard ms >= 0 else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .ms, in: c, debugDescription: "delay 不能为负: \(ms)")
+            }
+            self = .delay(ms: min(ms, Self.maxDelayMs))
         case "text":  self = .text(try c.decode(String.self, forKey: .value))
         default:      self = .action(try Action(from: d))
         }

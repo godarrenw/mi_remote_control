@@ -147,7 +147,7 @@ struct RemoteDiagram: View {
                 let logical = CGPoint(x: (location.x - origin.x) / scale,
                                       y: (location.y - origin.y) / scale)
                 if let key = G.key(at: logical) {
-                    withAnimation(.easeInOut(duration: 0.15)) { selected = key }
+                    withAnimation(Motion.select) { selected = key }
                 }
             }
         }

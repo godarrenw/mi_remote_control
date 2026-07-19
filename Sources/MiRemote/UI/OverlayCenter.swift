@@ -35,18 +35,36 @@ enum SystemMenuCatalog {
         .init(title: "锁屏",       symbol: "lock",                        action: .system("lock_screen"), dangerous: true),
         .init(title: "睡眠",       symbol: "moon.zzz",                    action: .system("display_sleep"), dangerous: true),
     ]
-    static let columns = 3
+    /// 常规区列数：10 个常规项 = 5×2 满行；3 个危险项独立居中一行（网格无孤行）。
+    static let columns = 5
     /// 危险项 OK 按住确认时长（gamepad-ux D2 遥控场景甜点值）。
     static let confirmHoldSeconds: TimeInterval = 0.6
+    /// 行宽布局：两行常规 + 一行危险区。
+    static var rowWidths: [Int] { [columns, columns, items.filter(\.dangerous).count] }
 
-    /// 网格方向移动的纯逻辑（供 self-test）：行内左右回绕，上下按列移动并夹在边界。
-    static func move(_ index: Int, key: RemoteKey, count: Int, columns: Int) -> Int {
+    /// index → (行, 列)（按 rowWidths 切分）。
+    static func position(of index: Int, rows: [Int]) -> (row: Int, col: Int) {
+        var rest = index
+        for (r, width) in rows.enumerated() {
+            if rest < width { return (r, rest) }
+            rest -= width
+        }
+        return (max(0, rows.count - 1), 0)
+    }
+
+    /// 网格方向移动的纯逻辑（供 self-test）：左右全序回绕，上下跨行保列并夹在行宽内。
+    static func move(_ index: Int, key: RemoteKey, rows: [Int]) -> Int {
+        let count = rows.reduce(0, +)
         guard count > 0 else { return 0 }
         switch key {
         case .left:  return (index - 1 + count) % count
         case .right: return (index + 1) % count
-        case .up:    return max(0, index - columns)
-        case .down:  return min(count - 1, index + columns)
+        case .up, .down:
+            let (row, col) = position(of: index, rows: rows)
+            let target = key == .up ? max(0, row - 1) : min(rows.count - 1, row + 1)
+            guard target != row else { return index }
+            let prefix = rows.prefix(target).reduce(0, +)
+            return prefix + min(col, rows[target] - 1)
         default:     return index
         }
     }
@@ -66,15 +84,19 @@ enum SystemMenuCatalog {
             default: return false
             }
         }
-        // 危险项必须集中在末尾且要求按住确认
+        // 危险项必须集中在末尾且要求按住确认；常规区必须刚好铺满整行（无孤行）
         let dangerousIdx = items.enumerated().filter { $0.element.dangerous }.map(\.offset)
         guard dangerousIdx == Array((items.count - dangerousIdx.count)..<items.count) else { return false }
-        // 方向移动纯逻辑抽查（3 列 12 项）
-        return move(0, key: .right, count: 12, columns: 3) == 1
-            && move(0, key: .left, count: 12, columns: 3) == 11
-            && move(1, key: .down, count: 12, columns: 3) == 4
-            && move(1, key: .up, count: 12, columns: 3) == 0
-            && move(10, key: .down, count: 12, columns: 3) == 11
+        guard (items.count - dangerousIdx.count) % columns == 0 else { return false }
+        // 方向移动纯逻辑抽查（行宽 [5,5,3] 共 13 项）
+        let rows = rowWidths
+        return move(0, key: .right, rows: rows) == 1
+            && move(0, key: .left, rows: rows) == 12
+            && move(1, key: .down, rows: rows) == 6
+            && move(6, key: .down, rows: rows) == 11
+            && move(9, key: .down, rows: rows) == 12
+            && move(12, key: .up, rows: rows) == 7
+            && move(1, key: .up, rows: rows) == 1
     }
 }
 
@@ -203,16 +225,12 @@ final class OverlayCenter {
         wheelIdleTimer = nil
         stopRepeat()
         cancelConfirm(refresh: false)
-        // 消失过渡：淡出 0.15s 后收面板（与出现的 spring 弹入成对）
-        if let closing = panel {
-            panel = nil
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = Motion.fadeOutDuration
-                closing.animator().alphaValue = 0
-            }, completionHandler: {
-                closing.orderOut(nil)
-                closing.alphaValue = 1
-            })
+        // 消失过渡：SwiftUI 侧 kind→nil 驱动缩放淡出，动画结束后仅 orderOut（面板常驻不销毁）
+        withAnimation(Motion.overlay) { uiState.kind = nil }
+        let closing = panel
+        DispatchQueue.main.asyncAfter(deadline: .now() + Motion.fadeOutDuration) { [weak self] in
+            guard self?.active == nil else { return }   // 淡出期间又打开了新浮层则不收
+            closing?.orderOut(nil)
         }
         quickLook.setVisible(false, bundleID: nil, appName: nil)
         // 若仍处于某个层，提示条回落为该层键表；否则收起
@@ -327,9 +345,7 @@ final class OverlayCenter {
     }
 
     private func menuStep(_ key: RemoteKey) {
-        menuIndex = SystemMenuCatalog.move(menuIndex, key: key,
-                                           count: SystemMenuCatalog.items.count,
-                                           columns: SystemMenuCatalog.columns)
+        menuIndex = SystemMenuCatalog.move(menuIndex, key: key, rows: SystemMenuCatalog.rowWidths)
         sync()
     }
 
@@ -444,9 +460,11 @@ final class OverlayCenter {
         }
     }
 
-    /// 全屏透明面板承载居中内容：不抢焦点；点空白（内容之外任意处）关闭。
-    private func showPanel() {
-        sync(animated: false)
+    /// 常驻面板：NSPanel 与 NSHostingView 全生命周期只创建一次；
+    /// show/hide 仅切换 orderFront/orderOut，显隐与入退场动画全部由 uiState.kind 驱动，
+    /// 跨次打开视图树连续（Codex r3 P1：不再是"单次打开期间"的伪持久）。
+    private func ensurePanel() -> NSPanel {
+        if let panel { return panel }
         let p = NSPanel(contentRect: NSScreen.main?.frame ?? .zero,
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
@@ -458,9 +476,19 @@ final class OverlayCenter {
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.contentView = NSHostingView(rootView: OverlayRootView(state: uiState,
                                                                 onDismiss: { [weak self] in self?.close() }))
-        if let screen = NSScreen.main { p.setFrame(screen.frame, display: true) }
         panel = p
+        return p
+    }
+
+    /// 全屏透明面板承载居中内容：不抢焦点；点空白（内容之外任意处）关闭。
+    private func showPanel() {
+        let p = ensurePanel()
+        if let screen = NSScreen.main { p.setFrame(screen.frame, display: true) }
+        uiState.kind = nil       // 入场从隐藏态开始（消失后残留的 kind 已在 close 清空，这里兜底）
+        sync(animated: false)    // 数据先无动画就位
+        uiState.kind = nil
         p.orderFrontRegardless()
+        withAnimation(Motion.overlay) { uiState.kind = active }
     }
 
     // MARK: App 控制模式 HUD（层 2；非捕获，仅提示）
@@ -645,14 +673,14 @@ struct KeyCapView: View {
     var body: some View {
         Group {
             if let symbol = Self.symbols[key] {
-                Image(systemName: symbol).font(.system(size: 9, weight: .semibold))
+                Image(systemName: symbol).font(.system(size: 12, weight: .semibold))
             } else {
                 Text(key == .ok ? "OK" : KeyDisplay.badge(key))
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
             }
         }
         .foregroundStyle(.white)
-        .frame(width: 18, height: 18)
+        .frame(width: 24, height: 24)
         .background(Color(red: 0.11, green: 0.11, blue: 0.12),
                     in: RoundedRectangle(cornerRadius: Radius.small))
     }
@@ -665,14 +693,14 @@ struct HintBarView: View {
     var body: some View {
         HStack(spacing: Spacing.rowH) {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                HStack(spacing: 4) {
+                HStack(spacing: 5) {
                     ForEach(item.keys, id: \.self) { key in KeyCapView(key: key) }
-                    Text(item.text).font(.caption)
+                    Text(item.text).font(.callout)
                 }
             }
         }
-        .padding(.horizontal, Spacing.rowH)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 9)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().stroke(Color(nsColor: .separatorColor), lineWidth: 1))
     }
@@ -680,13 +708,21 @@ struct HintBarView: View {
 
 // MARK: - 视图
 
-/// 持久根视图：观察 OverlayUIState，选中变化在既有视图树内做连续动画。
+/// 持久根视图：观察 OverlayUIState，选中变化在既有视图树内做连续动画；
+/// 入退场也由 kind 驱动（打开=spring 弹入，关闭=缩放淡出），视图树跨次打开不重建。
 private struct OverlayRootView: View {
     @ObservedObject var state: OverlayUIState
     let onDismiss: () -> Void
 
+    private var visible: Bool { state.kind != nil }
+
     var body: some View {
-        OverlayBackdrop(onDismiss: onDismiss) {
+        ZStack {
+            // 轻度压暗背景（主机浮层惯例）：突出浮层层级，点空白关闭
+            Color.black.opacity(visible ? 0.18 : 0)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { onDismiss() }
             Group {
                 switch state.kind {
                 case .windowPicker:
@@ -702,30 +738,10 @@ private struct OverlayRootView: View {
                     EmptyView()
                 }
             }
-        }
-    }
-}
-
-/// 全屏点空白关闭的背景 + 居中内容。
-private struct OverlayBackdrop<Content: View>: View {
-    let onDismiss: () -> Void
-    @ViewBuilder let content: () -> Content
-
-    @State private var appeared = false
-
-    var body: some View {
-        ZStack {
-            // 轻度压暗背景（主机浮层惯例）：突出浮层层级，点空白关闭
-            Color.black.opacity(appeared ? 0.18 : 0)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture { onDismiss() }
-            content()
-                .scaleEffect(appeared ? 1 : 0.96)
-                .opacity(appeared ? 1 : 0)
+            .scaleEffect(visible ? 1 : 0.96)
+            .opacity(visible ? 1 : 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { withAnimation(Motion.overlay) { appeared = true } }
     }
 }
 
@@ -743,8 +759,6 @@ private struct WindowPickerView: View {
                 Text(currentAppOnly ? "窗口 · \(frontAppName ?? "当前 App")" : "窗口 · 所有 App")
                     .font(.headline)
                 Spacer()
-                Text("←→ 选择 · 菜单键切范围 · OK 前往 · 返回关闭")
-                    .font(.caption).foregroundStyle(.secondary)
             }
             if entries.isEmpty {
                 Text(currentAppOnly ? "当前 App 没有可见窗口，按菜单键查看所有 App"
@@ -754,7 +768,7 @@ private struct WindowPickerView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 14) {
+                        HStack(spacing: 16) {
                             ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
                                 card(entry, isSelected: index == selected).id(index)
                             }
@@ -773,18 +787,18 @@ private struct WindowPickerView: View {
                         HStack(spacing: 0) {
                             LinearGradient(colors: [.clear, .black],
                                            startPoint: .leading, endPoint: .trailing)
-                                .frame(width: 24)
+                                .frame(width: 64)
                             Rectangle()
                             LinearGradient(colors: [.black, .clear],
                                            startPoint: .leading, endPoint: .trailing)
-                                .frame(width: 24)
+                                .frame(width: 64)
                         }
                     )
                 }
             }
         }
         .padding(Spacing.sheetPadding)
-        .frame(maxWidth: 720)
+        .frame(maxWidth: 1000)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.overlay))
         .overlay(RoundedRectangle(cornerRadius: Radius.overlay)
             .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
@@ -794,14 +808,14 @@ private struct WindowPickerView: View {
     private func card(_ entry: WindowSwitcher.PickerEntry, isSelected: Bool) -> some View {
         VStack(spacing: 8) {
             appIcon(entry.bundleID)
-                .frame(width: 44, height: 44)
+                .frame(width: 60, height: 60)
             Text(entry.window.title.isEmpty ? entry.appName : entry.window.title)
-                .font(.caption)
+                .font(.callout)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-                .frame(width: 120)
+                .frame(width: 156)
             Text(entry.appName)
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
@@ -831,23 +845,29 @@ private struct SystemMenuView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack {
+            // 操作提示只保留屏底 HintBar 一份（权威），头部不再重复
+            HStack(spacing: 8) {
                 Image(systemName: "square.grid.3x3")
                 Text("系统功能").font(.headline)
                 Spacer()
-                Text("方向选择 · OK 执行 · 返回关闭")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-            let columns = Array(repeating: GridItem(.fixed(132), spacing: Spacing.intra),
+            let normal = SystemMenuCatalog.items.enumerated().filter { !$0.element.dangerous }
+            let dangerous = SystemMenuCatalog.items.enumerated().filter { $0.element.dangerous }
+            let columns = Array(repeating: GridItem(.fixed(188), spacing: 12),
                                 count: SystemMenuCatalog.columns)
-            LazyVGrid(columns: columns, spacing: Spacing.intra) {
-                ForEach(Array(SystemMenuCatalog.items.enumerated()), id: \.offset) { index, item in
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(normal, id: \.offset) { index, item in
+                    tile(item, index: index)
+                }
+            }
+            Divider().padding(.vertical, 2)
+            HStack(spacing: 12) {
+                ForEach(dangerous, id: \.offset) { index, item in
                     tile(item, index: index)
                 }
             }
         }
-        .padding(Spacing.sheetPadding)
-        .frame(maxWidth: 500)
+        .padding(24)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.overlay))
         .overlay(RoundedRectangle(cornerRadius: Radius.overlay)
             .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
@@ -857,15 +877,15 @@ private struct SystemMenuView: View {
     @ViewBuilder
     private func tile(_ item: SystemMenuItem, index: Int) -> some View {
         let isSelected = index == selected
-        VStack(spacing: 4) {
-            Image(systemName: item.symbol).font(.system(size: 20))
-            Text(item.title).font(.caption)
+        VStack(spacing: 6) {
+            Image(systemName: item.symbol).font(.system(size: 28))
+            Text(item.title).font(.callout)
             if item.dangerous {
-                Text("按住 OK 确认").font(.caption2).foregroundStyle(.secondary)
+                Text("按住 OK 确认").font(.caption).foregroundStyle(.secondary)
             }
         }
         .foregroundStyle(item.dangerous ? Color.red : Color.primary)
-        .frame(width: 124, height: 62)
+        .frame(width: 180, height: 96)
         .background(Color(nsColor: .controlBackgroundColor)
             .opacity(isSelected ? 1 : 0.55),
             in: RoundedRectangle(cornerRadius: Radius.card))
@@ -896,7 +916,7 @@ private struct ConfirmRingView: View {
                 .stroke(Color.red, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-90))
         }
-        .frame(width: 18, height: 18)
+        .frame(width: 24, height: 24)
         .onAppear { withAnimation(.linear(duration: duration)) { progress = 1 } }
     }
 }
@@ -910,7 +930,7 @@ struct AppWheelView: View {
     let apps: [Entry]
     let selected: Int
 
-    private let radius: CGFloat = 96
+    private let radius: CGFloat = 140
 
     var body: some View {
         VStack(spacing: 10) {
@@ -930,18 +950,18 @@ struct AppWheelView: View {
                     // 中心：选中 App 名 + 取消待定态（Steam radial 规范：中心=取消区）
                     VStack(spacing: 3) {
                         Text(apps.indices.contains(selected) ? apps[selected].name : "")
-                            .font(.callout.weight(.semibold))
+                            .font(.title3.weight(.semibold))
                             .lineLimit(1)
                             .frame(maxWidth: radius * 1.3)
                         Text(selected == 0 ? "当前前台" : "最近使用")
-                            .font(.caption2).foregroundStyle(.secondary)
+                            .font(.callout).foregroundStyle(.secondary)
                         HStack(spacing: 3) {
                             Image(systemName: "xmark.circle.fill")
                             Text("返回取消")
                         }
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .padding(.top, 2)
+                        .padding(.top, 3)
                     }
                     // 图标沿圆环（从正上方起顺时针均布）
                     ForEach(Array(apps.enumerated()), id: \.offset) { index, entry in
@@ -951,10 +971,10 @@ struct AppWheelView: View {
                                     y: radius * CGFloat(sin(angle)))
                     }
                 }
-                .frame(width: radius * 2 + 76, height: radius * 2 + 76)
+                .frame(width: radius * 2 + 104, height: radius * 2 + 104)
             }
-            Text("方向键选择 · OK / TV 切换 · 返回取消 · 3 秒无操作自动关闭")
-                .font(.caption).foregroundStyle(.secondary)
+            Text("3 秒无操作自动关闭")
+                .font(.callout).foregroundStyle(.secondary)
         }
         .padding(Spacing.sheetPadding)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.overlay))
@@ -974,7 +994,7 @@ struct AppWheelView: View {
                     Image(systemName: "app.dashed").font(.title).foregroundStyle(.secondary)
                 }
             }
-            .frame(width: isSelected ? 52 : 40, height: isSelected ? 52 : 40)
+            .frame(width: isSelected ? 78 : 58, height: isSelected ? 78 : 58)
             .background(Circle().fill(Color(nsColor: .controlBackgroundColor))
                 .padding(-7)
                 .shadow(color: isSelected ? Color.accentColor.opacity(0.5) : .clear, radius: 6))

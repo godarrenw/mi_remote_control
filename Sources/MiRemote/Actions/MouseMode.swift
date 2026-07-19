@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import os
 
 /// 鼠标模式（DESIGN §4.5）：toggle 进入后由本模块接管方向键/OK/菜单/返回的语义。
 ///
@@ -48,13 +49,22 @@ final class MouseMode: @unchecked Sendable {
     private var holdStartNs: UInt64 = 0
     private let source = CGEventSource(stateID: .combinedSessionState)
 
-    var isActive: Bool { q.sync { active } }
+    /// active 的无阻塞只读镜像：TapEngine 在 tap 回调热路径分流方向键时读取，
+    /// 不能 q.sync（避免热路径跨队列同步）。写方仅 activate/deactivateLocked。
+    private let activeFlag = OSAllocatedUnfairLock(initialState: false)
+
+    var isActive: Bool { activeFlag.withLock { $0 } }
 
     // MARK: - 对外接口
 
     /// 进入/退出鼠标模式（Action.mouseMode 由 ActionRunner 调这里）。
     func toggle() {
         q.sync { active ? deactivateLocked() : activateLocked() }
+    }
+
+    /// 显式退出（幂等）。逃生键/暂停遥控等兜底路径调用。
+    func deactivate() {
+        q.sync { if active { deactivateLocked() } }
     }
 
     /// 按键事件入口（MappingEngine 侧接线调用，任意线程安全）。
@@ -91,6 +101,7 @@ final class MouseMode: @unchecked Sendable {
 
     private func activateLocked() {
         active = true
+        activeFlag.withLock { $0 = true }
         let t = DispatchSource.makeTimerSource(queue: q)
         t.schedule(deadline: .now(), repeating: .milliseconds(16), leeway: .milliseconds(2)) // ~60Hz
         t.setEventHandler { [weak self] in self?.tick() } // handler 在 q 上执行，可直接碰状态
@@ -101,6 +112,7 @@ final class MouseMode: @unchecked Sendable {
 
     private func deactivateLocked() {
         active = false
+        activeFlag.withLock { $0 = false }
         timer?.cancel()
         timer = nil
         held.removeAll()

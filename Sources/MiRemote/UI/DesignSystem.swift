@@ -39,6 +39,11 @@ enum Motion {
     static let focus = Animation.easeInOut(duration: 0.2)
     static let fadeInDuration: TimeInterval = 0.18
     static let fadeOutDuration: TimeInterval = 0.2
+    /// 微提示出现 / 退场（「已保存」一类 toast）
+    static let quickFade = Animation.easeIn(duration: 0.1)
+    static let toastFade = Animation.easeOut(duration: 0.4)
+    /// 实时电平表刷新
+    static let meter = Animation.linear(duration: 0.08)
 }
 
 /// 每页统一的大标题 + 副标题（复刻系统设置左对齐版式）。
@@ -48,7 +53,7 @@ struct PageHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.title.weight(.semibold))
+            Text(title).font(.title2.weight(.semibold))
             Text(subtitle).font(.caption).foregroundStyle(.secondary)
         }
     }

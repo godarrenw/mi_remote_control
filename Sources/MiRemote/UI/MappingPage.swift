@@ -8,16 +8,15 @@ struct SettingsGroup<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title.uppercased())
+            Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .kerning(0.5)
                 .padding(.leading, 4)
             VStack(spacing: 0) { content }
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: Radius.card))
                 .overlay(RoundedRectangle(cornerRadius: Radius.card)
-                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1))
         }
     }
 }
@@ -83,9 +82,9 @@ struct MappingPage: View {
         }
         .sheet(isPresented: $showKeyLearn) { KeyLearnSheet() }
         .onChange(of: model.savedTick) {
-            withAnimation(.easeIn(duration: 0.1)) { showSaved = true }
+            withAnimation(Motion.quickFade) { showSaved = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                withAnimation(.easeOut(duration: 0.4)) { showSaved = false }
+                withAnimation(Motion.toastFade) { showSaved = false }
             }
         }
     }
