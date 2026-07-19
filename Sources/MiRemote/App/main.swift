@@ -10,8 +10,9 @@ import AppKit
 let startupArgs = Array(CommandLine.arguments.dropFirst())
 if startupArgs == ["--self-test"] { exit(SelfTest.run()) }
 
-// 两份进程会同时争用 hidutil / CGEventTap，因此所有模式都先获取单实例锁。
-if !HealthMonitor.acquireSingleInstanceLock() {
+// 两份进程会同时争用 hidutil / CGEventTap，因此除 --ui-preview（引擎不启动、
+// 不装映射不抢键盘，纯界面开发验证）外都先获取单实例锁。
+if !startupArgs.contains("--ui-preview"), !HealthMonitor.acquireSingleInstanceLock() {
     print("已有实例在运行（锁文件 \(HealthMonitor.lockFilePath())），本次启动退出。")
     exit(1)
 }

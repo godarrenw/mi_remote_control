@@ -407,10 +407,11 @@ enum SelfTest {
                 "ok": KeyBinding(gesture: ["up": .openApp("com.example.custom")]),
             ]
             let migrated = migrateConfigIfNeeded(legacy)
+            // v1→v2 曾把 menu.tap 设为导航模式，v4（心智模型 v2）再统一改写为窗口选择器浮层。
             expect(migrated.version == MappingConfig.currentVersion
                    && migrated.settings.doubleMs == 300
-                   && migrated.profiles["global"]?["menu"]?.tap == .layerToggle(3),
-                   "v1 迁移版本/导航入口/双击窗口")
+                   && migrated.profiles["global"]?["menu"]?.tap == .overlay("window_picker"),
+                   "v1 迁移版本/菜单键 v2 语义/双击窗口")
             expect(migrated.profiles["global"]?["ok"]?.gesture?["up"] == .openApp("com.example.custom")
                    && migrated.profiles["global"]?["ok"]?.gesture?["down"] == .windowCycle(scope: "app"),
                    "v1 迁移保留用户手势并补空位")
@@ -429,7 +430,7 @@ enum SelfTest {
             let migratedV3 = migrateConfigIfNeeded(alreadyV2)
             expect(migratedV3.profiles["com.mitchellh.ghostty"] == nil,
                    "v2→v3 不补回用户删除的 Profile")
-            expect(migratedV3.version == 3
+            expect(migratedV3.version == MappingConfig.currentVersion
                    && migratedV3.voiceProfiles?["global"] == VoiceTriggerRule(),
                    "v2→v3 补全全局语音触发规则")
 
@@ -636,6 +637,116 @@ enum SelfTest {
         expect(ATVVBridge.parseBatteryLevel(Data([0x61])) == 97, "Battery Level 0x61 → 97%")
         expect(ATVVBridge.parseBatteryLevel(Data([0xFF])) == 100, "Battery Level 坏值钳到 100%")
         expect(ATVVBridge.parseBatteryLevel(Data()) == nil, "Battery Level 空包忽略")
+
+        // ===== M5 v2：浮层体系 / uiCapture 路由 / 默认配置 v2 =====
+
+        // v2-1. uiCapture 路由纯逻辑：捕获态事件全量转交浮层、方向键分流吞给引擎、关闭恢复。
+        expect(MappingEngine.uiCaptureSelfCheck(), "MappingEngine uiCapture 路由自测")
+
+        // v2-2. Action.overlay JSON 往返 + 未知浮层名不影响解码（名字是自由字符串）。
+        do {
+            let a = Action.overlay("window_picker")
+            let back = try JSONDecoder().decode(Action.self, from: JSONEncoder().encode(a))
+            expect(back == a, "Action.overlay JSON 往返")
+            let parsed = try JSONDecoder().decode(
+                Action.self, from: Data(#"{"type":"overlay","value":"system_menu"}"#.utf8))
+            expect(parsed == .overlay("system_menu"), "overlay JSON 字面量解析")
+        } catch { expect(false, "Action.overlay JSON", "\(error)") }
+
+        // v2-3. show_desktop 键表：合成 Fn+F11（macOS 显示桌面默认快捷键）。
+        expect(WorkspaceActions.shortcuts[.showDesktop]
+                   == WorkspaceShortcut(keyCode: 103, modifiers: [.function]),
+               "show_desktop = Fn+F11 键表")
+
+        // v2-4. 浮层数据模型：系统功能菜单目录 + 网格移动纯逻辑。
+        expect(SystemMenuCatalog.selfCheck(), "系统功能菜单目录/网格移动自测")
+
+        // v2-5. 默认配置 v2 结构断言（DESIGN §3.1b 心智模型）。
+        do {
+            let cfg = defaultConfig()
+            let g = cfg.profiles["global"]
+            expect(g?["home"]?.tap == .system("show_desktop")
+                   && g?["home"]?.hold == .overlay("tutorial"),
+                   "默认配置 v2：Home=显示桌面/教程浮层")
+            expect(g?["menu"]?.tap == .overlay("window_picker")
+                   && g?["menu"]?.hold == .overlay("system_menu"),
+                   "默认配置 v2：菜单=窗口选择器/系统功能菜单")
+            expect(g?["tv"]?.tap == .layerToggle(2)
+                   && g?["tv"]?.hold == .keyStroke(key: "t", mods: ["left_cmd"])
+                   && g?["tv"]?.double == nil,
+                   "默认配置 v2：TV=控制模式开关/App主操作，双击不定义")
+            expect(g?["tv"]?.layers?["2"] == nil,
+                   "默认配置 v2：TV 层2 留空保证再按退出")
+            expect(g?["ok"]?.hold == .layerMomentary(1),
+                   "默认配置 v2：OK 长按=快捷控制模式")
+            expect(g?["volUp"]?.tap == .system("volume_up")
+                   && g?["volDown"]?.tap == .system("volume_down"),
+                   "默认配置 v2：音量±=系统音量")
+            expect(g?["volUp"]?.layers?["2"] == .tabJump(dir: 1, index: nil)
+                   && g?["volDown"]?.layers?["2"] == .tabJump(dir: -1, index: nil),
+                   "默认配置 v2：控制模式内 ±=切 Agent")
+            expect(g?["ok"]?.layers?["2"] == .keyStroke(key: "return", mods: [])
+                   && g?["back"]?.layers?["2"] == .keyStroke(key: "escape", mods: [])
+                   && g?["menu"]?.layers?["2"] == .keyStroke(key: "tab", mods: ["left_shift"]),
+                   "默认配置 v2：控制模式 OK=Enter/返回=Esc/菜单=Shift+Tab")
+            // 控制模式 HUD 数据源：默认配置能产出非空键位表，末行=退出提示。
+            let rows = OverlayCenter.controlModeRows(config: cfg, profile: "global")
+            expect(rows.count >= 5 && rows.last?.1 == "退出控制模式",
+                   "控制模式 HUD 键位表数据源")
+        }
+
+        // v2-6. v3→v4 迁移：TV 双击旧接线清除、层2 音量改切 Agent、旧 per-app TV tap 让位。
+        do {
+            var old = MappingConfig()
+            old.version = 3
+            old.voiceProfiles = ["global": VoiceTriggerRule()]
+            old.profiles["global"] = [
+                "home": KeyBinding(tap: .system("launchpad")),
+                "menu": KeyBinding(tap: .layerToggle(3)),
+                "tv": KeyBinding(tap: .openApp("com.apple.systempreferences"),
+                                 hold: .layerMomentary(1),
+                                 double: .layerToggle(2),
+                                 layers: ["2": .keyStroke(key: "1", mods: [])]),
+                "volUp": KeyBinding(tap: .system("volume_up"),
+                                    layers: ["2": .keyStroke(key: "2", mods: [])]),
+                "volDown": KeyBinding(tap: .system("volume_down"),
+                                      layers: ["2": .keyStroke(key: "3", mods: [])]),
+                "ok": KeyBinding(tap: .keyStroke(key: "return", mods: [])),
+            ]
+            old.profiles["com.mitchellh.ghostty"] = [
+                "tv": KeyBinding(tap: .keyStroke(key: "return", mods: ["left_cmd", "left_shift"]),
+                                 double: .layerToggle(2)),
+            ]
+            let cfg = migrateConfigIfNeeded(old)
+            let g = cfg.profiles["global"]
+            expect(cfg.version == 4
+                   && g?["home"]?.tap == .system("show_desktop")
+                   && g?["menu"]?.tap == .overlay("window_picker")
+                   && g?["tv"]?.tap == .layerToggle(2)
+                   && g?["tv"]?.double == nil
+                   && g?["tv"]?.layers?["2"] == nil,
+                   "v3→v4 心智模型 v2 骨架改写")
+            expect(g?["volUp"]?.layers?["2"] == .tabJump(dir: 1, index: nil)
+                   && g?["volDown"]?.layers?["2"] == .tabJump(dir: -1, index: nil)
+                   && g?["ok"]?.hold == .layerMomentary(1),
+                   "v3→v4 层2 音量切 Agent + OK 长按补层1入口")
+            let ghosttyTV = cfg.profiles["com.mitchellh.ghostty"]?["tv"]
+            expect(ghosttyTV?.double == nil && ghosttyTV?.tap == nil,
+                   "v3→v4 per-app 旧 TV 接线清除")
+        }
+
+        // v2-7. 预设不再劫持 v2 系统导航键的 base 槽位（菜单 tap / TV tap/double）。
+        do {
+            var bad: String? = nil
+            for p in [Presets.coreGestures, Presets.aiApprovalLayer, Presets.multiAgentBindings]
+                    + Presets.workPresets {
+                if p.bindings["menu"]?.tap != nil { bad = "\(p.id).menu.tap"; break }
+                if p.bindings["tv"]?.tap != nil { bad = "\(p.id).tv.tap"; break }
+                if p.bindings["tv"]?.double != nil { bad = "\(p.id).tv.double"; break }
+                if p.bindings["tv"]?.layers?["2"] != nil { bad = "\(p.id).tv.layers[2]"; break }
+            }
+            expect(bad == nil, "预设不占用 v2 导航键 base 槽位", bad ?? "")
+        }
 
         // M5-5. 录制键名反查表：常用键可反查、别名不夺位
         expect(KeyNameLookup.canonical[36] == "return"

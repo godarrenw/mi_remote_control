@@ -39,7 +39,7 @@ enum KeyRemapper {
         (0x51, 0x6F, 90,  .down),   // F20 (kVK_F20)
         (0x50, 0x68, 105, .left),   // F13 (kVK_F13)
         (0x4F, 0x53, 71,  .right),  // Keypad Clear (kVK_ANSI_KeypadClear)
-        // 音量键也需进入引擎：基础模式仍执行系统音量，AI 助手模式可复用为数字 2/3。
+        // 音量键也需进入引擎：基础模式仍执行系统音量，App 控制模式复用为切 Agent。
         // 选用少见的小键盘除/乘作为中转，避免与普通字母数字键冲突。
         (0x80, 0x54, 75,  .volUp),   // Keypad Divide
         (0x81, 0x55, 67,  .volDown), // Keypad Multiply
@@ -69,6 +69,8 @@ enum KeyRemapper {
     }
     static func directionVerdict(key: RemoteKey, isRepeat: Bool, route: TapRoute) -> DirectionVerdict? {
         guard let arrow = nativeArrowKeycode[key] else { return nil }
+        // 浮层捕获态：方向键必须吞给引擎（引擎再转交浮层），绝不原生放行。
+        if route.uiCapture { return isRepeat ? .drop : .engine }
         if route.effectiveLayer == 0, !route.okDown, route.nativeDirections.contains(key) {
             return .rewrite(arrow)
         }

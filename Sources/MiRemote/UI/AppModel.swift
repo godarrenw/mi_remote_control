@@ -139,7 +139,18 @@ enum ActionSummary {
         case .focusInput:               return "聚焦输入框"
         case .mouseMode:                return "鼠标模式开关"
         case .macro(let steps):         return "宏（\(steps.count) 步）"
+        case .overlay(let name):        return overlayDisplay(name)
         }
+    }
+
+    /// 浮层名 → 中文显示（与 OverlayCenter.Kind 一致）。
+    static let overlayNames: [(value: String, display: String)] = [
+        ("window_picker", "窗口选择器浮层"),
+        ("system_menu", "系统功能菜单浮层"),
+        ("tutorial", "按键教程浮层"),
+    ]
+    static func overlayDisplay(_ v: String) -> String {
+        overlayNames.first(where: { $0.value == v })?.display ?? "浮层 · \(v)"
     }
 
     /// 自测（不依赖 AppKit 查询路径的分支）。
@@ -150,13 +161,15 @@ enum ActionSummary {
             && describe(.system("mission_control")) == "调度中心"
             && describe(.layerMomentary(1)) == "按住进入快捷控制模式"
             && describe(.tabJump(dir: -1, index: nil)) == "上一个标签页"
+            && describe(.overlay("window_picker")) == "窗口选择器浮层"
+            && describe(.layerToggle(2)) == "开关App 控制模式"
     }
 }
 
 func modeDisplayName(_ number: Int) -> String {
     switch number {
     case 1: return "快捷控制模式"
-    case 2: return "AI 助手模式"
+    case 2: return "App 控制模式"   // v2：TV 单击进出，弹 HUD（原「AI 助手模式」）
     case 3: return "App 导航模式"
     default: return "自定义模式 \(number)"
     }

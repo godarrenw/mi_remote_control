@@ -47,9 +47,19 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
 
     private let source = CGEventSource(stateID: .combinedSessionState)
 
+    /// M5 v2 浮层动作出口：GUI 模式接线（OverlayCenter，主线程自行切换）；
+    /// CLI 模式无 GUI，保持 nil，仅记日志。写主线程/读引擎线程，赋值一次后只读。
+    nonisolated(unsafe) static var onOverlay: ((String) -> Void)?
+
     // MARK: - ActionRunning
     func run(_ action: Action) {
         switch action {
+        case .overlay(let name):
+            if let hook = Self.onOverlay {
+                DispatchQueue.main.async { hook(name) }
+            } else {
+                log("overlay 动作仅 GUI 模式可用: \(name)")
+            }
         case .keyStroke(let key, let mods): keyStroke(key: key, mods: mods)
         case .system(let name):             system(name)
         case .openApp(let bundle):          openApp(bundle)

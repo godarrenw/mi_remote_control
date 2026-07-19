@@ -89,13 +89,81 @@ func migrateConfigIfNeeded(_ input: MappingConfig) -> MappingConfig {
         cfg.voiceProfiles = rules
         cfg.version = 3
     }
+    if cfg.version < 4 {
+        migrateToMentalModelV2(&cfg)
+        cfg.version = 4
+    }
     return cfg
 }
 
+/// v4：按键心智模型 v2（DESIGN §3.1b）。系统导航键（Home/菜单/TV）的 base 槽位
+/// 是心智模型的骨架，强制改写到 v2 语义；用户其余自定义（层内/手势/per-app）保留。
+func migrateToMentalModelV2(_ cfg: inout MappingConfig) {
+    var g = cfg.profiles["global"] ?? [:]
+
+    var home = g["home"] ?? KeyBinding()
+    home.tap = .system("show_desktop")          // 零延迟显示桌面（键帽语义就近）
+    home.hold = .overlay("tutorial")            // 当前 App 映射教程浮层
+    home.double = nil
+    g["home"] = home
+
+    var menu = g["menu"] ?? KeyBinding()
+    menu.tap = .overlay("window_picker")        // 窗口选择器浮层
+    menu.hold = .overlay("system_menu")         // 完整系统功能菜单浮层
+    menu.double = nil
+    g["menu"] = menu
+
+    var tv = g["tv"] ?? KeyBinding()
+    tv.tap = .layerToggle(2)                    // 进/出 App 控制模式（层2 + HUD）
+    tv.hold = .keyStroke(key: "t", mods: ["left_cmd"])  // 当前 App 主操作（默认新建 Tab）
+    tv.double = nil                             // v2 双击不定义（TV 双击切层已被控制模式取代）
+    // 层2 内 TV 不再直选数字：留空让 tap 回退 layerToggle(2)，保证「再按 TV 退出模式」。
+    tv.layers?.removeValue(forKey: "2")
+    g["tv"] = tv
+
+    // 层1（快捷控制模式）的入口从旧 TV hold 迁到 OK hold（不覆盖用户已设 hold）。
+    var okB = g["ok"] ?? KeyBinding()
+    if okB.hold == nil { okB.hold = .layerMomentary(1) }
+    g["ok"] = okB
+
+    // 层2 音量± 由旧「数字 2/3 直选」改为「切 Agent（上一个/下一个标签）」。
+    var volUp = g["volUp"] ?? KeyBinding()
+    if volUp.tap == nil { volUp.tap = .system("volume_up") }
+    if volUp.layers?["2"] == .keyStroke(key: "2", mods: []) {
+        volUp.layers?["2"] = .tabJump(dir: 1, index: nil)
+    }
+    g["volUp"] = volUp
+    var volDown = g["volDown"] ?? KeyBinding()
+    if volDown.tap == nil { volDown.tap = .system("volume_down") }
+    if volDown.layers?["2"] == .keyStroke(key: "3", mods: []) {
+        volDown.layers?["2"] = .tabJump(dir: -1, index: nil)
+    }
+    g["volDown"] = volDown
+
+    cfg.profiles["global"] = g
+
+    // per-app 清理：旧预设的「TV 双击=layer_toggle(2)」与旧 TV tap 接线让位给控制模式。
+    let staleTvTaps: [Action] = [
+        .keyStroke(key: "return", mods: ["left_cmd", "left_shift"]),   // 旧 Ghostty 预设
+        .keyStroke(key: "1", mods: []),                                 // 旧 Codex/Claude 桌面预设
+    ]
+    for (name, profile) in cfg.profiles where name != "global" {
+        guard var tvB = profile["tv"] else { continue }
+        if tvB.double == .layerToggle(2) { tvB.double = nil }
+        if let tap = tvB.tap, staleTvTaps.contains(tap) { tvB.tap = nil }
+        var p = profile
+        p["tv"] = tvB
+        cfg.profiles[name] = p
+    }
+}
+
 func defaultConfig() -> MappingConfig {
-    // 默认配置：方向=方向键（层1 示例：上下=音量），OK=回车/长按进层1/按住+方向=手势，
-    // 返回=退格，菜单=调度中心，主页=启动台，TV=打开系统设置，电源=熄屏，音量=系统音量。
-    // 语音键放行给 ATVV。
+    // 默认配置 = 按键心智模型 v2（DESIGN §3.1b，2026-07-19 定稿）：
+    //   内容操作：方向/OK/返回原生直通（引擎保护）；OK 长按=快捷控制模式（层1）。
+    //   同级切换：音量± = 系统音量（跟键帽一致）；控制模式内 = 切 Agent/标签。
+    //   系统导航：Home 单击=显示桌面（零延迟）、长按=映射教程浮层；
+    //             菜单单击=窗口选择器浮层、长按=系统功能菜单浮层。
+    //   App 专用：TV 单击=进/出 App 控制模式（层2+HUD）、长按=当前 App 主操作（默认新建 Tab ⌘T）。
     var cfg = MappingConfig()
     cfg.voiceProfiles = ["global": VoiceTriggerRule()]
     cfg.profiles["global"] = [
@@ -106,6 +174,7 @@ func defaultConfig() -> MappingConfig {
         "left":    KeyBinding(tap: .keyStroke(key: "left_arrow", mods: [])),
         "right":   KeyBinding(tap: .keyStroke(key: "right_arrow", mods: [])),
         "ok":      KeyBinding(tap: .keyStroke(key: "return", mods: []),
+                              hold: .layerMomentary(1),
                               gesture: [
                                   "up":    .system("mission_control"),
                                   "down":  .windowCycle(scope: "app"),
@@ -114,21 +183,22 @@ func defaultConfig() -> MappingConfig {
                               ]),
         "back":    KeyBinding(tap: .keyStroke(key: "delete", mods: []),
                               layers: ["1": .system("previous_app")]),
-        "menu":    KeyBinding(tap: .layerToggle(3),
+        "menu":    KeyBinding(tap: .overlay("window_picker"),
+                              hold: .overlay("system_menu"),
                               layers: ["1": .system("next_app")]),
-        "home":    KeyBinding(tap: .system("launchpad"),
-                              layers: ["1": .system("show_desktop")]),
-        // TV 双击 = 进/出 AI 批准层（层2，见 Presets.aiApprovalLayer）
-        "tv":      KeyBinding(tap: .openApp("com.apple.systempreferences"),
-                              hold: .layerMomentary(1),
-                              double: .layerToggle(2),
+        "home":    KeyBinding(tap: .system("show_desktop"),
+                              hold: .overlay("tutorial"),
+                              layers: ["1": .system("mission_control")]),
+        // TV 单击 = 进/出 App 控制模式（层2；HUD 由 GUI 随层变化显示）
+        "tv":      KeyBinding(tap: .layerToggle(2),
+                              hold: .keyStroke(key: "t", mods: ["left_cmd"]),
                               layers: ["1": .system("app_expose")]),
         "power":   KeyBinding(tap: .system("display_sleep")),
         "volUp":   KeyBinding(tap: .system("volume_up")),
         "volDown": KeyBinding(tap: .system("volume_down")),
         "voice":   KeyBinding(tap: .voice),
     ]
-    // 内置预设并入默认配置：AI 批准层(层2)/多agent跳转 进 global，媒体/会议进 per-app overlay。
+    // 内置预设并入默认配置：App 控制模式绑定(层2)/多agent跳转 进 global，媒体/会议进 per-app overlay。
     // 不覆盖上面已设的槽位（apply 默认 force=false）。
     for p in Presets.all { Presets.apply(p, to: &cfg) }
     return cfg
@@ -262,10 +332,6 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
     /// 引擎路径上的每个按键事件（GUI「按下即亮」）。回调线程=事件来源线程。
     var onButtonEvent: ((ButtonEvent) -> Void)?
     var onActiveApplication: ((String?) -> Void)?
-    /// GUI 提供；true=打开当前 App 映射速查，false=关闭。
-    var onMappingQuickLook: ((Bool, String?, String?) -> Void)?
-
-    private let homeQuickLook = HomeQuickLookGesture()
 
     /// 最近一个「非本进程」的前台应用（防止本 App 自己的设置窗口污染 per-app profile）。
     private(set) var lastExternalApplication: NSRunningApplication?
@@ -296,26 +362,11 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
     func hidButton(_ event: ButtonEvent) {
         if verbose { log("KEY \(event.key.rawValue) \(event.isDown ? "↓" : "↑")") }
         onButtonEvent?(event)
-        if event.key == .home, onMappingQuickLook != nil {
-            let app = lastExternalApplication
-            homeQuickLook.handle(event,
-                                 bundleID: app?.bundleIdentifier,
-                                 appName: app?.localizedName,
-                                 onToggle: { [weak self] visible, bundleID, appName in
-                                     self?.onMappingQuickLook?(visible, bundleID, appName)
-                                 },
-                                 forwardShortPress: { [weak self] down, up in
-                                     self?.engine.handle(down)
-                                     self?.engine.handle(up)
-                                 })
-            return
-        }
+        // M5 v2：Home 长按教程浮层改走引擎的 hold=.overlay("tutorial") 常规路径，
+        // 浮层打开后由 uiCapture 捕获后续按键（含再按 Home 关闭）。
         engine.handle(event)
     }
 
-    func updateHoldThreshold(_ milliseconds: Int) {
-        homeQuickLook.updateHoldThreshold(milliseconds)
-    }
     func hidSeizeState(_ exclusive: Bool) {
         log(exclusive ? "按键已独占接管" : "按键降级为监听模式（系统仍会响应原始按键）")
         onSeizeState?(exclusive)
@@ -324,80 +375,6 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
     func layerChanged(_ layer: Int) {
         log("层 → \(layer)")
         onLayerChanged?(layer)
-    }
-}
-
-/// Home 是系统级速查手势：先缓冲一次按压，短按完整转交映射引擎；长按只开浮层。
-/// 浮层已开时下一次 Home 的 keyDown 立即关闭，并吞掉该次 keyUp，绝不会误发原动作。
-private final class HomeQuickLookGesture: @unchecked Sendable {
-    private let lock = NSLock()
-    private var thresholdMs = 350
-    private var generation = 0
-    private var isDown = false
-    private var didOpenOnThisPress = false
-    private var overlayVisible = false
-    private var swallowRelease = false
-
-    func updateHoldThreshold(_ milliseconds: Int) {
-        lock.lock(); thresholdMs = max(200, milliseconds); lock.unlock()
-    }
-
-    func handle(_ event: ButtonEvent,
-                bundleID: String?, appName: String?,
-                onToggle: @escaping (Bool, String?, String?) -> Void,
-                forwardShortPress: @escaping (ButtonEvent, ButtonEvent) -> Void) {
-        if event.isDown {
-            lock.lock()
-            if overlayVisible {
-                overlayVisible = false
-                swallowRelease = true
-                isDown = false
-                generation &+= 1
-                lock.unlock()
-                onToggle(false, bundleID, appName)
-                return
-            }
-            // 忽略键盘自动重复产生的重复 keyDown。
-            guard !isDown else { lock.unlock(); return }
-            isDown = true
-            didOpenOnThisPress = false
-            generation &+= 1
-            let token = generation
-            let delay = thresholdMs
-            lock.unlock()
-
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
-                guard let self else { return }
-                self.lock.lock()
-                guard self.isDown, self.generation == token, !self.overlayVisible else {
-                    self.lock.unlock(); return
-                }
-                self.didOpenOnThisPress = true
-                self.overlayVisible = true
-                self.lock.unlock()
-                onToggle(true, bundleID, appName)
-            }
-            return
-        }
-
-        lock.lock()
-        if swallowRelease {
-            swallowRelease = false
-            lock.unlock()
-            return
-        }
-        guard isDown else { lock.unlock(); return }
-        isDown = false
-        generation &+= 1
-        let wasLongPress = didOpenOnThisPress
-        didOpenOnThisPress = false
-        lock.unlock()
-
-        if !wasLongPress {
-            // MappingEngine 只依赖事件顺序；在松开时补成对事件，可保留 tap/double 语义。
-            let down = ButtonEvent(key: .home, isDown: true, timeNs: event.timeNs)
-            forwardShortPress(down, event)
-        }
     }
 }
 
@@ -506,7 +483,6 @@ final class AppServices {
             let config = loadOrCreateConfig(at: options.configPath)
             voiceRuleStore.update(config: config)
             let km = KeyMapperApp(config: config, verbose: options.verbose)
-            km.updateHoldThreshold(config.settings.holdMs)
             voiceRuleStore.update(bundleID: km.lastExternalApplication?.bundleIdentifier)
             km.onActiveApplication = { [weak voiceRuleStore] bundleID in
                 voiceRuleStore?.update(bundleID: bundleID)
@@ -567,7 +543,6 @@ final class AppServices {
     /// 热加载映射配置（UI 写回 config.json 后调用）。
     func applyConfig(_ config: MappingConfig) {
         voiceRuleStore.update(config: config)
-        keyMapper?.updateHoldThreshold(config.settings.holdMs)
         keyMapper?.engine.setConfig(config)
     }
 

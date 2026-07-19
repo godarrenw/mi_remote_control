@@ -56,7 +56,7 @@ struct MappingDetailView: View {
                 }
                 Spacer()
                 if isQuickLook {
-                    Text("再按一下主页键关闭")
+                    Text("再按主页 / 返回键或 Esc 关闭")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if let onEdit {
@@ -91,7 +91,7 @@ struct MappingDetailView: View {
                 .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
 
             if isQuickLook {
-                Text("长按主页键可随时打开这张表；它不会抢走主页键的普通短按动作。")
+                Text("长按主页键可随时打开这张表；浮层打开期间遥控键不会触发原动作。")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
