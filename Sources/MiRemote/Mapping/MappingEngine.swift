@@ -20,6 +20,9 @@ struct TapRoute: Sendable {
     /// 鼠标模式捕获态：true=方向键吞给引擎（MouseMode.handle 消费为光标移动）。
     /// 引擎快照不维护此位——TapEngine 分流时实时读 MouseMode.shared.isActive 填充。
     var mouseCapture: Bool = false
+    /// 调度中心模式捕获态：true=方向键吞给引擎，用左右切换 Space。
+    /// 与 mouseCapture 一样由 TapEngine 在事件回调时实时填充。
+    var systemUICapture: Bool = false
 }
 
 /// 按键映射状态机（DESIGN.md §3.1-§3.3）。
@@ -324,6 +327,22 @@ final class MappingEngine: @unchecked Sendable {
         // 鼠标模式：方向/OK/菜单/返回由 MouseMode 消费（方向=移动、OK=左键、菜单=右键、
         // 返回=退出模式），消费后不再走普通映射；其余键（电源/音量/语音）照常。
         if MouseMode.shared.handle(key: event.key, isDown: event.isDown) { return }
+        // Home 打开的调度中心模式：左右直接切 Space，并续期 20 秒状态窗口。
+        // 同一次按压的 keyUp 也在此吞掉，避免给普通按键状态机留下孤儿事件。
+        if TransientSystemUI.isMissionControlActive(), isDirection(event.key) {
+            if event.isDown {
+                switch event.key {
+                case .left:  runner.run(.system("space_left"))
+                case .right: runner.run(.system("space_right"))
+                case .up:    runner.run(.keyStroke(key: "up_arrow", mods: []))
+                case .down:  runner.run(.keyStroke(key: "down_arrow", mods: []))
+                default: break
+                }
+                TransientSystemUI.markMissionControlEntered()
+                log("MISSION CONTROL \(event.key)")
+            }
+            return
+        }
         if event.key == .ok, okPhysicallyDown != event.isDown {
             okPhysicallyDown = event.isDown
             publishTapRoute()
@@ -501,12 +520,12 @@ final class MappingEngine: @unchecked Sendable {
 
     /// 短按分发：层激活时优先 `layers["\(层)"]`，缺失退回 `tap`。
     private func fireTap(_ key: RemoteKey) {
-        // 从 MiRemote 打开 Mission Control 后，菜单键的首要语义是退出该系统态。
+        // 从 MiRemote 打开 Mission Control 后，Home/菜单的首要语义是退出该系统态。
         // 发 Esc 比再次 open Mission Control.app 可靠，并且只消费一次。
-        if effectiveLayer == 0, key == .menu,
-           TransientSystemUI.consumeMissionControlMenuExit() {
+        if effectiveLayer == 0, (key == .menu || key == .home),
+           TransientSystemUI.consumeMissionControlExit() {
             runner.run(.keyStroke(key: "escape", mods: []))
-            log("MENU 退出 Mission Control")
+            log("\(key) 退出 Mission Control")
             return
         }
         let b = binding(for: key)
@@ -825,13 +844,16 @@ extension MappingEngine {
             expect(d.layers == [2, 0], "F1 idle timeout emits layerChanged(0)")
         }
 
-        // 场景 F1b：调度中心由遥控打开后，下一次菜单短按发 Esc 退出，不跑普通菜单映射。
+        // 场景 F1b：调度中心内左右切 Space，Home/菜单短按发 Esc 退出。
         do {
             let (e, r, _, c) = makeEngine()
             TransientSystemUI.markMissionControlEntered()
-            down(e, .menu); c.advance(10); up(e, .menu)
-            expect(r.actions == [.keyStroke(key: "escape", mods: [])],
-                   "F1b menu exits Mission Control with Escape")
+            down(e, .left); up(e, .left)
+            down(e, .right); up(e, .right)
+            down(e, .home); c.advance(10); up(e, .home)
+            expect(r.actions == [.system("space_left"), .system("space_right"),
+                                 .keyStroke(key: "escape", mods: [])],
+                   "F1b directions switch Spaces and Home exits Mission Control")
             TransientSystemUI.clearMissionControlExit()
         }
 

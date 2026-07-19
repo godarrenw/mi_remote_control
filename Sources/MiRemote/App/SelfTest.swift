@@ -566,6 +566,11 @@ enum SelfTest {
                    "鼠标模式：方向 → engine")
             expect(KeyRemapper.directionVerdict(key: .up, isRepeat: true, route: r) == .drop,
                    "鼠标模式：autorepeat → drop")
+            r.mouseCapture = false
+            r.systemUICapture = true
+            expect(KeyRemapper.directionVerdict(key: .left, isRepeat: false, route: r) == .engine
+                   && KeyRemapper.directionVerdict(key: .right, isRepeat: true, route: r) == .drop,
+                   "调度中心模式：方向 → engine，autorepeat → drop")
             var ui = r
             ui.uiCapture = true
             expect(KeyRemapper.directionVerdict(key: .up, isRepeat: false, route: ui) == .engine,
@@ -797,12 +802,14 @@ enum SelfTest {
         expect(WorkspaceActions.shortcuts[.showDesktop] == nil,
                "show_desktop 使用直接系统入口而非易失效的 Fn+F11")
         TransientSystemUI.markMissionControlEntered(nowNs: 100)
-        expect(TransientSystemUI.consumeMissionControlMenuExit(nowNs: 101),
-               "Mission Control 进入后菜单键退出令牌可消费")
-        expect(!TransientSystemUI.consumeMissionControlMenuExit(nowNs: 102),
+        expect(TransientSystemUI.isMissionControlActive(nowNs: 101),
+               "Mission Control 进入后方向捕获态有效")
+        expect(TransientSystemUI.consumeMissionControlExit(nowNs: 101),
+               "Mission Control 进入后退出令牌可消费")
+        expect(!TransientSystemUI.consumeMissionControlExit(nowNs: 102),
                "Mission Control 退出令牌只消费一次")
         TransientSystemUI.markMissionControlEntered(nowNs: 100)
-        expect(!TransientSystemUI.consumeMissionControlMenuExit(nowNs: 21_000_000_000),
+        expect(!TransientSystemUI.consumeMissionControlExit(nowNs: 21_000_000_000),
                "Mission Control 退出令牌超时自动作废")
 
         // v2-4. 浮层数据模型：系统功能菜单目录 + 网格移动纯逻辑。
@@ -819,10 +826,10 @@ enum SelfTest {
         do {
             let cfg = defaultConfig()
             let g = cfg.profiles["global"]
-            expect(g?["home"]?.tap == .system("show_desktop")
+            expect(g?["home"]?.tap == .system("mission_control")
                    && g?["home"]?.hold == .overlay("tutorial")
-                   && g?["home"]?.double == .system("mission_control"),
-                   "默认配置 v2：Home=显示桌面/教程浮层/双击调度中心")
+                   && g?["home"]?.double == nil,
+                   "默认配置 v2：Home=调度中心/教程浮层，无双击等待")
             expect(g?["menu"]?.tap == .overlay("window_picker")
                    && g?["menu"]?.hold == .overlay("system_menu"),
                    "默认配置 v2：菜单=窗口选择器/系统功能菜单")
@@ -875,7 +882,7 @@ enum SelfTest {
                    "控制模式 HUD 键位表数据源")
         }
 
-        // v2-6. v3→当前版本迁移：心智模型 v2 + Home 双击调度中心。
+        // v2-6. v3→当前版本迁移：心智模型 v2 + Home 单按调度中心。
         do {
             var old = MappingConfig()
             old.version = 3
@@ -900,13 +907,13 @@ enum SelfTest {
             let cfg = migrateConfigIfNeeded(old)
             let g = cfg.profiles["global"]
             expect(cfg.version == MappingConfig.currentVersion
-                   && g?["home"]?.tap == .system("show_desktop")
-                   && g?["home"]?.double == .system("mission_control")
+                   && g?["home"]?.tap == .system("mission_control")
+                   && g?["home"]?.double == nil
                    && g?["menu"]?.tap == .overlay("window_picker")
                    && g?["tv"]?.tap == .layerToggle(2)
                    && g?["tv"]?.double == nil
                    && g?["tv"]?.layers?["2"] == nil,
-                   "v3→v5 心智模型 v2 + Home 双击语义")
+                   "v3→v7 心智模型 v2 + Home 单击调度中心")
             expect(g?["volUp"]?.layers?["2"] == .tabJump(dir: 1, index: nil)
                    && g?["volDown"]?.layers?["2"] == .tabJump(dir: -1, index: nil)
                    && g?["ok"]?.hold == nil
@@ -915,6 +922,19 @@ enum SelfTest {
             let ghosttyTV = cfg.profiles["com.mitchellh.ghostty"]?["tv"]
             expect(ghosttyTV?.double == nil && ghosttyTV?.tap == nil,
                    "v3→v4 per-app 旧 TV 接线清除")
+        }
+
+        // v2-8. v6→v7：已有安装也强制切到 Home 单按调度中心，并消除双击等待。
+        do {
+            var old = defaultConfig()
+            old.version = 6
+            old.profiles["global"]?["home"]?.tap = .system("show_desktop")
+            old.profiles["global"]?["home"]?.double = .system("mission_control")
+            let cfg = migrateConfigIfNeeded(old)
+            expect(cfg.version == 7
+                   && cfg.profiles["global"]?["home"]?.tap == .system("mission_control")
+                   && cfg.profiles["global"]?["home"]?.double == nil,
+                   "v6→v7 Home 单按调度中心且无双击等待")
         }
 
         // v2-7. v5→v6：只清理内置支持 App 的 Home/菜单基础槽，并搬入层2。
@@ -947,7 +967,7 @@ enum SelfTest {
                    "v5→v6 用户自建 Profile 不改写")
         }
 
-        // v2-8. 预设不再劫持 v2 系统导航键的 base 槽位。
+        // v2-9. 预设不再劫持 v2 系统导航键的 base 槽位。
         do {
             var bad: String? = nil
             for p in Presets.all {

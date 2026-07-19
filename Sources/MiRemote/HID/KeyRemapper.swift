@@ -74,6 +74,8 @@ enum KeyRemapper {
         // 鼠标模式：方向键喂引擎（MouseMode.handle 消费为光标移动），autorepeat 吞弃
         //（移动靠按住状态 + 60Hz 定时器，不靠系统重复事件）。
         if route.mouseCapture { return isRepeat ? .drop : .engine }
+        // 调度中心模式：左右由引擎转换为跨 Space 操作。
+        if route.systemUICapture { return isRepeat ? .drop : .engine }
         if route.effectiveLayer == 0, !route.okDown, route.nativeDirections.contains(key) {
             return .rewrite(arrow)
         }
@@ -542,6 +544,7 @@ final class TapEngine: @unchecked Sendable {
                     var route = router?.tapRoute ?? TapRoute()
                     route.okDown = st.okDown
                     route.mouseCapture = MouseMode.shared.isActive
+                    route.systemUICapture = TransientSystemUI.isMissionControlActive()
                     let v = KeyRemapper.directionVerdict(key: key, isRepeat: false, route: route)!
                     if case .rewrite = v { st.nativeHeld.insert(key) } else { st.nativeHeld.remove(key) }
                     return v

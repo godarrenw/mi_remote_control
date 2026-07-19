@@ -3,8 +3,8 @@ import CoreGraphics
 import Foundation
 import os
 
-/// 由遥控器打开的 Mission Control 是一个短暂系统态：进入后的下一次菜单键
-/// 应该先退出它，而不是又打开 MiRemote 窗口选择器。
+/// 由遥控器打开的 Mission Control 是一个短暂系统态：期间方向键由 MiRemote
+/// 接管用于切换桌面，Home/菜单再次短按退出；20 秒无操作后自动失效。
 enum TransientSystemUI {
     private static let exitWindowNs: UInt64 = 20_000_000_000
     private static let missionControlDeadline = OSAllocatedUnfairLock(initialState: UInt64(0))
@@ -13,7 +13,17 @@ enum TransientSystemUI {
         missionControlDeadline.withLock { $0 = nowNs &+ exitWindowNs }
     }
 
-    static func consumeMissionControlMenuExit(nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds) -> Bool {
+    static func isMissionControlActive(nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds) -> Bool {
+        missionControlDeadline.withLock { deadline in
+            guard deadline != 0, nowNs <= deadline else {
+                deadline = 0
+                return false
+            }
+            return true
+        }
+    }
+
+    static func consumeMissionControlExit(nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds) -> Bool {
         missionControlDeadline.withLock { deadline in
             guard deadline != 0, nowNs <= deadline else {
                 deadline = 0

@@ -141,6 +141,16 @@ func migrateConfigIfNeeded(_ input: MappingConfig) -> MappingConfig {
         }
         cfg.version = 6
     }
+    if cfg.version < 7 {
+        // Home 单按直接进入调度中心；移除双击，保证松开即触发、没有双击等待。
+        var g = cfg.profiles["global"] ?? [:]
+        var home = g["home"] ?? KeyBinding()
+        home.tap = .system("mission_control")
+        home.double = nil
+        g["home"] = home
+        cfg.profiles["global"] = g
+        cfg.version = 7
+    }
     return cfg
 }
 
@@ -150,7 +160,7 @@ func migrateToMentalModelV2(_ cfg: inout MappingConfig) {
     var g = cfg.profiles["global"] ?? [:]
 
     var home = g["home"] ?? KeyBinding()
-    home.tap = .system("show_desktop")          // 零延迟显示桌面（键帽语义就近）
+    home.tap = .system("mission_control")       // 单按立即进入调度中心
     home.hold = .overlay("tutorial")            // 当前 App 映射教程浮层
     home.double = nil
     g["home"] = home
@@ -206,7 +216,7 @@ func defaultConfig() -> MappingConfig {
     // 默认配置 = 按键心智模型 v2（DESIGN §3.1b，2026-07-19 定稿）：
     //   内容操作：方向/OK/返回原生直通（引擎保护）。
     //   同级切换：音量± = 系统音量（跟键帽一致）；控制模式内 = 切 Agent/标签。
-    //   系统导航：Home 单击=显示桌面（零延迟）、长按=映射教程浮层；
+    //   系统导航：Home 单击=调度中心（左右切桌面）、长按=映射教程浮层；
     //             菜单单击=窗口选择器浮层、长按=系统功能菜单浮层。
     //   App 专用：TV 单击=进/出 App 控制模式（层2+HUD）、长按=App 轮盘浮层（停留式）。
     //   零同按组合：单手拇指操作，「按住 A 再按 B」（OK+方向手势、OK 长按瞬时层）
@@ -226,9 +236,9 @@ func defaultConfig() -> MappingConfig {
         "menu":    KeyBinding(tap: .overlay("window_picker"),
                               hold: .overlay("system_menu"),
                               layers: ["1": .system("next_app")]),
-        "home":    KeyBinding(tap: .system("show_desktop"),
+        "home":    KeyBinding(tap: .system("mission_control"),
                               hold: .overlay("tutorial"),
-                              double: .system("mission_control"),
+                              double: nil,
                               layers: ["1": .system("mission_control")]),
         // TV 单击 = 进/出 App 控制模式（层2；HUD 由 GUI 随层变化显示）；
         // 长按 = App 轮盘浮层（停留式：弹出后可松手，方向选、OK/再按 TV 确认、
