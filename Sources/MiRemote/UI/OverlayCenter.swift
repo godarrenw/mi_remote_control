@@ -78,6 +78,22 @@ enum SystemMenuCatalog {
     }
 }
 
+// MARK: - 浮层视图状态（持久 HostingView 的唯一数据源）
+
+/// 选中移动 = @Published 变化驱动的连续动画；视图树只在浮层打开时创建一次，不随按键重建。
+@MainActor
+final class OverlayUIState: ObservableObject {
+    @Published var kind: OverlayCenter.Kind?
+    @Published var pickerEntries: [WindowSwitcher.PickerEntry] = []
+    @Published var pickerIndex = 0
+    @Published var pickerCurrentAppOnly = true
+    @Published var frontAppName: String?
+    @Published var menuIndex = 0
+    @Published var menuConfirming = false
+    @Published var wheelEntries: [AppWheelView.Entry] = []
+    @Published var wheelIndex = 0
+}
+
 // MARK: - 浮层中心
 
 @MainActor
@@ -97,6 +113,7 @@ final class OverlayCenter {
 
     private var active: Kind?
     private var panel: NSPanel?
+    private let uiState = OverlayUIState()
     private var escMonitor: Any?
 
     // 窗口选择器状态
@@ -153,10 +170,10 @@ final class OverlayCenter {
         case .windowPicker:
             pickerCurrentAppOnly = true
             reloadPickerEntries()
-            showPanel(content: AnyView(windowPickerView()))
+            showPanel()
         case .systemMenu:
             menuIndex = 0
-            showPanel(content: AnyView(systemMenuView()))
+            showPanel()
         case .tutorial:
             quickLook.setVisible(true,
                                  bundleID: frontApp?.bundleIdentifier,
@@ -165,7 +182,7 @@ final class OverlayCenter {
             // 数据源 = KeyMapperApp 的 MRU 栈（[0]=当前前台，[1..]=最近用过，主线程读）
             wheelApps = services?.keyMapper?.mruExternalApplications.filter { !$0.isTerminated } ?? []
             wheelIndex = wheelApps.count > 1 ? 1 : 0   // 默认选「上一个 App」，一确认即回切
-            showPanel(content: AnyView(appWheelView()))
+            showPanel()
             restartWheelIdleTimer()
         }
         installEscMonitor()
@@ -190,7 +207,7 @@ final class OverlayCenter {
         if let closing = panel {
             panel = nil
             NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 0.15
+                ctx.duration = Motion.fadeOutDuration
                 closing.animator().alphaValue = 0
             }, completionHandler: {
                 closing.orderOut(nil)
@@ -278,7 +295,7 @@ final class OverlayCenter {
     private func pickerStep(_ delta: Int) {
         guard !pickerEntries.isEmpty else { return }
         pickerIndex = (pickerIndex + delta + pickerEntries.count) % pickerEntries.count
-        refreshPanel(content: AnyView(windowPickerView()))
+        sync()
     }
 
     private func handlePickerKey(_ key: RemoteKey) {
@@ -293,7 +310,7 @@ final class OverlayCenter {
             // 再按菜单键（或上下）= 范围切换：当前 App ↔ 所有 App
             pickerCurrentAppOnly.toggle()
             reloadPickerEntries()
-            refreshPanel(content: AnyView(windowPickerView()))
+            sync()
         case .ok:
             if pickerEntries.indices.contains(pickerIndex) {
                 let target = pickerEntries[pickerIndex].window
@@ -313,7 +330,7 @@ final class OverlayCenter {
         menuIndex = SystemMenuCatalog.move(menuIndex, key: key,
                                            count: SystemMenuCatalog.items.count,
                                            columns: SystemMenuCatalog.columns)
-        refreshPanel(content: AnyView(systemMenuView()))
+        sync()
     }
 
     private func handleMenuKey(_ key: RemoteKey) {
@@ -344,7 +361,7 @@ final class OverlayCenter {
         guard confirmingIndex == nil else { return }
         confirmingIndex = menuIndex
         let index = menuIndex
-        refreshPanel(content: AnyView(systemMenuView()))
+        sync()
         let t = Timer(timeInterval: SystemMenuCatalog.confirmHoldSeconds, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.confirmingIndex == index else { return }
@@ -362,9 +379,7 @@ final class OverlayCenter {
         confirmTimer = nil
         guard confirmingIndex != nil else { return }
         confirmingIndex = nil
-        if refresh, active == .systemMenu {
-            refreshPanel(content: AnyView(systemMenuView()))
-        }
+        if refresh, active == .systemMenu { sync() }
     }
 
     /// App 轮盘（停留式）：方向环选 App、OK 或再按 TV 确认切换、返回取消，
@@ -375,11 +390,11 @@ final class OverlayCenter {
         case .left, .up:
             guard !wheelApps.isEmpty else { return }
             wheelIndex = (wheelIndex - 1 + wheelApps.count) % wheelApps.count
-            refreshPanel(content: AnyView(appWheelView()))
+            sync()
         case .right, .down:
             guard !wheelApps.isEmpty else { return }
             wheelIndex = (wheelIndex + 1) % wheelApps.count
-            refreshPanel(content: AnyView(appWheelView()))
+            sync()
         case .ok, .tv:
             let target = wheelApps.indices.contains(wheelIndex) ? wheelApps[wheelIndex] : nil
             close()
@@ -398,23 +413,40 @@ final class OverlayCenter {
         }
     }
 
-    private func appWheelView() -> some View {
-        AppWheelView(apps: wheelApps.map {
-            AppWheelView.Entry(name: $0.localizedName ?? $0.bundleIdentifier ?? "App",
-                               bundleID: $0.bundleIdentifier)
-        }, selected: wheelIndex)
-    }
-
     private func reloadPickerEntries() {
         pickerEntries = WindowSwitcher.pickerEntries(currentAppOnly: pickerCurrentAppOnly,
                                                      frontPid: frontApp?.processIdentifier)
         pickerIndex = 0
     }
 
-    // MARK: 面板
+    // MARK: 面板（持久 HostingView：视图树只建一次，之后全部走 sync() 状态驱动）
+
+    /// 把逻辑状态发布给持久视图树；选中类变化以 Motion.select 驱动连续过渡（Codex 评审 P2-1）。
+    private func sync(animated: Bool = true) {
+        let apply = { [self] in
+            uiState.kind = active
+            uiState.pickerEntries = pickerEntries
+            uiState.pickerIndex = pickerIndex
+            uiState.pickerCurrentAppOnly = pickerCurrentAppOnly
+            uiState.frontAppName = frontApp?.localizedName
+            uiState.menuIndex = menuIndex
+            uiState.menuConfirming = confirmingIndex != nil
+            uiState.wheelEntries = wheelApps.map {
+                AppWheelView.Entry(name: $0.localizedName ?? $0.bundleIdentifier ?? "App",
+                                   bundleID: $0.bundleIdentifier)
+            }
+            uiState.wheelIndex = wheelIndex
+        }
+        if animated {
+            withAnimation(Motion.select) { apply() }
+        } else {
+            apply()
+        }
+    }
 
     /// 全屏透明面板承载居中内容：不抢焦点；点空白（内容之外任意处）关闭。
-    private func showPanel(content: AnyView) {
+    private func showPanel() {
+        sync(animated: false)
         let p = NSPanel(contentRect: NSScreen.main?.frame ?? .zero,
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
@@ -424,29 +456,11 @@ final class OverlayCenter {
         p.hasShadow = false
         p.isReleasedWhenClosed = false
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        p.contentView = NSHostingView(rootView: OverlayRootView(state: uiState,
+                                                                onDismiss: { [weak self] in self?.close() }))
+        if let screen = NSScreen.main { p.setFrame(screen.frame, display: true) }
         panel = p
-        refreshPanel(content: content)
         p.orderFrontRegardless()
-    }
-
-    private func refreshPanel(content: AnyView) {
-        guard let panel else { return }
-        let root = OverlayBackdrop(onDismiss: { [weak self] in self?.close() }) { content }
-        panel.contentView = NSHostingView(rootView: root)
-        if let screen = NSScreen.main { panel.setFrame(screen.frame, display: true) }
-    }
-
-    // MARK: SwiftUI 内容
-
-    private func windowPickerView() -> some View {
-        WindowPickerView(entries: pickerEntries,
-                         selected: pickerIndex,
-                         currentAppOnly: pickerCurrentAppOnly,
-                         frontAppName: frontApp?.localizedName)
-    }
-
-    private func systemMenuView() -> some View {
-        SystemMenuView(selected: menuIndex, confirming: confirmingIndex != nil)
     }
 
     // MARK: App 控制模式 HUD（层 2；非捕获，仅提示）
@@ -545,7 +559,7 @@ final class OverlayCenter {
             hintPanel.alphaValue = 0
             hintPanel.orderFrontRegardless()
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.18
+                ctx.duration = Motion.fadeInDuration
                 hintPanel.animator().alphaValue = 1
             }
         } else {
@@ -556,7 +570,7 @@ final class OverlayCenter {
     private func hideHintBar() {
         guard let hintPanel, hintPanel.isVisible else { return }
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.15
+            ctx.duration = Motion.fadeOutDuration
             hintPanel.animator().alphaValue = 0
         }, completionHandler: {
             hintPanel.orderOut(nil)
@@ -666,6 +680,32 @@ struct HintBarView: View {
 
 // MARK: - 视图
 
+/// 持久根视图：观察 OverlayUIState，选中变化在既有视图树内做连续动画。
+private struct OverlayRootView: View {
+    @ObservedObject var state: OverlayUIState
+    let onDismiss: () -> Void
+
+    var body: some View {
+        OverlayBackdrop(onDismiss: onDismiss) {
+            Group {
+                switch state.kind {
+                case .windowPicker:
+                    WindowPickerView(entries: state.pickerEntries,
+                                     selected: state.pickerIndex,
+                                     currentAppOnly: state.pickerCurrentAppOnly,
+                                     frontAppName: state.frontAppName)
+                case .systemMenu:
+                    SystemMenuView(selected: state.menuIndex, confirming: state.menuConfirming)
+                case .appWheel:
+                    AppWheelView(apps: state.wheelEntries, selected: state.wheelIndex)
+                default:
+                    EmptyView()
+                }
+            }
+        }
+    }
+}
+
 /// 全屏点空白关闭的背景 + 居中内容。
 private struct OverlayBackdrop<Content: View>: View {
     let onDismiss: () -> Void
@@ -728,6 +768,18 @@ private struct WindowPickerView: View {
                             proxy.scrollTo(value, anchor: .center)
                         }
                     }
+                    // 两侧渐隐：截断的卡片以淡出收边，暗示可继续滚动
+                    .mask(
+                        HStack(spacing: 0) {
+                            LinearGradient(colors: [.clear, .black],
+                                           startPoint: .leading, endPoint: .trailing)
+                                .frame(width: 24)
+                            Rectangle()
+                            LinearGradient(colors: [.black, .clear],
+                                           startPoint: .leading, endPoint: .trailing)
+                                .frame(width: 24)
+                        }
+                    )
                 }
             }
         }
@@ -809,7 +861,7 @@ private struct SystemMenuView: View {
             Image(systemName: item.symbol).font(.system(size: 20))
             Text(item.title).font(.caption)
             if item.dangerous {
-                Text("按住 OK 确认").font(.caption2).foregroundStyle(.tertiary)
+                Text("按住 OK 确认").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .foregroundStyle(item.dangerous ? Color.red : Color.primary)
@@ -888,7 +940,7 @@ struct AppWheelView: View {
                             Text("返回取消")
                         }
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .padding(.top, 2)
                     }
                     // 图标沿圆环（从正上方起顺时针均布）
@@ -930,7 +982,7 @@ struct AppWheelView: View {
                 .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 2.5)
                 .padding(-7))
         }
-        .animation(.easeInOut(duration: 0.12), value: isSelected)
+        .animation(Motion.select, value: isSelected)
     }
 }
 

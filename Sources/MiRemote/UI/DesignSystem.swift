@@ -31,11 +31,14 @@ enum Radius {
     static let overlay: CGFloat = 16
 }
 
-/// 动效体系：浮层弹入用 spring，选中/焦点切换用 0.15s 缓动。
+/// 动效体系：浮层弹入用 spring，选中/焦点切换用 0.15s 缓动；
+/// AppKit 侧（NSAnimationContext）淡入/淡出统一走这两个时长。
 enum Motion {
     static let overlay = Animation.spring(response: 0.3, dampingFraction: 0.85)
     static let select = Animation.easeInOut(duration: 0.15)
     static let focus = Animation.easeInOut(duration: 0.2)
+    static let fadeInDuration: TimeInterval = 0.18
+    static let fadeOutDuration: TimeInterval = 0.2
 }
 
 /// 每页统一的大标题 + 副标题（复刻系统设置左对齐版式）。
@@ -45,7 +48,7 @@ struct PageHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.title.bold())
+            Text(title).font(.title.weight(.semibold))
             Text(subtitle).font(.caption).foregroundStyle(.secondary)
         }
     }

@@ -127,6 +127,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         guard let button = statusItem?.button else { return }
         let p = NSPopover()
         p.behavior = .transient
+        p.appearance = NSApp.effectiveAppearance
         p.delegate = self
         p.contentViewController = NSHostingController(
             rootView: StatusPanelView(
@@ -395,7 +396,7 @@ final class FloatingBadgeController {
             panel.alphaValue = 0
             panel.orderFrontRegardless()
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.18
+                ctx.duration = Motion.fadeInDuration
                 panel.animator().alphaValue = 1
             }
         } else {
@@ -407,7 +408,7 @@ final class FloatingBadgeController {
         guard let panel, panel.isVisible else { return }
         // 退出模式：淡出后收起
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.25
+            ctx.duration = Motion.fadeOutDuration
             panel.animator().alphaValue = 0
         }, completionHandler: {
             panel.orderOut(nil)

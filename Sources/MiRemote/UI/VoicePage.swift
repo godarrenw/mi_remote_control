@@ -62,52 +62,57 @@ struct VoicePage: View {
 
                 SettingsGroup(title: "按 App 的语音快捷键") {
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("适用 App").font(.body)
-                            Spacer()
-                            Picker("", selection: $selectedProfile) {
-                                ForEach(selectableProfiles, id: \.self) { profile in
-                                    Text(profileDisplayName(profile)).tag(profile)
+                        // 三列稳定网格：标签 / 控件（等宽 250）/ 附件位，右缘对齐如系统 Form
+                        Grid(alignment: .leading, horizontalSpacing: Spacing.intra, verticalSpacing: 12) {
+                            GridRow {
+                                Text("适用 App").font(.body)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Picker("", selection: $selectedProfile) {
+                                    ForEach(selectableProfiles, id: \.self) { profile in
+                                        Text(profileDisplayName(profile)).tag(profile)
+                                    }
                                 }
+                                .labelsHidden()
+                                .frame(width: 250)
+                                Button { showAddApp = true } label: {
+                                    Image(systemName: "plus")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("从运行中的 App 添加")
                             }
-                            .labelsHidden()
-                            .frame(width: 250)
-                            Button { showAddApp = true } label: {
-                                Image(systemName: "plus")
+                            GridRow {
+                                Text("触发按键").font(.body)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Picker("", selection: triggerKeyBinding) {
+                                    ForEach(triggerKeys, id: \.0) { item in Text(item.1).tag(item.0) }
+                                }
+                                .labelsHidden()
+                                .frame(width: 250)
+                                Color.clear.frame(width: 16, height: 1)
                             }
-                            .buttonStyle(.borderless)
-                            .help("从运行中的 App 添加")
-                        }
-                        RowDivider()
-                        HStack {
-                            Text("触发按键").font(.body)
-                            Spacer()
-                            Picker("", selection: triggerKeyBinding) {
-                                ForEach(triggerKeys, id: \.0) { item in Text(item.1).tag(item.0) }
+                            GridRow {
+                                Text("触发方式").font(.body)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Picker("", selection: triggerModeBinding) {
+                                    Text("按住说话").tag("hold")
+                                    Text("单击开始 / 再击结束").tag("tap")
+                                    Text("双击开始 / 单击结束").tag("double")
+                                }
+                                .labelsHidden()
+                                .frame(width: 250)
+                                Color.clear.frame(width: 16, height: 1)
                             }
-                            .labelsHidden()
-                            .frame(width: 250)
-                        }
-                        HStack {
-                            Text("触发方式").font(.body)
-                            Spacer()
-                            Picker("", selection: triggerModeBinding) {
-                                Text("按住说话").tag("hold")
-                                Text("单击开始 / 再击结束").tag("tap")
-                                Text("双击开始 / 单击结束").tag("double")
+                            GridRow {
+                                Text("语音工具").font(.body)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Picker("", selection: imeModeBinding) {
+                                    Text("豆包输入法（自动切换）").tag("doubao")
+                                    Text("独立语音 App（不切输入法）").tag("standalone")
+                                }
+                                .labelsHidden()
+                                .frame(width: 250)
+                                Color.clear.frame(width: 16, height: 1)
                             }
-                            .labelsHidden()
-                            .frame(width: 250)
-                        }
-                        HStack {
-                            Text("语音工具").font(.body)
-                            Spacer()
-                            Picker("", selection: imeModeBinding) {
-                                Text("豆包输入法（自动切换）").tag("doubao")
-                                Text("独立语音 App（不切输入法）").tag("standalone")
-                            }
-                            .labelsHidden()
-                            .frame(width: 250)
                         }
                         if selectedProfile != "global" {
                             HStack {
@@ -124,7 +129,7 @@ struct VoicePage: View {
                             }
                         }
                         Text("这里设置的是遥控器开始传音时，MiRemote 向当前 App 发送的快捷键。请先在对应语音工具里设成同一个键。")
-                            .font(.footnote).foregroundStyle(.tertiary)
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
                     .padding(Spacing.cardPadding)
                 }
@@ -162,7 +167,7 @@ struct VoicePage: View {
                                 .frame(width: 52, alignment: .trailing)
                         }
                         Text("增益改动在下次语音会话生效")
-                            .font(.footnote).foregroundStyle(.tertiary)
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
                     .padding(Spacing.cardPadding)
                 }
@@ -251,7 +256,7 @@ struct VoicePage: View {
                 Text("4. 回到这里按住遥控器语音键说话——上方自检第 3 项变绿即成功。")
                 doubaoMicIllustration
                 Text("只需要设置一次；说话时 MiRemote 会临时把系统输入切到 BlackHole，松开语音键约 1 秒后自动还原。")
-                    .font(.footnote).foregroundStyle(.tertiary)
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             .font(.caption)
             .padding(Spacing.cardPadding)

@@ -62,8 +62,8 @@ struct RootView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 14)
+                .padding(.horizontal, Spacing.rowH - 2)
+                .padding(.vertical, Spacing.rowH)
 
                 List(SidebarItem.allCases, selection: $selection) { item in
                     Label(item.title, systemImage: item.icon).tag(item)

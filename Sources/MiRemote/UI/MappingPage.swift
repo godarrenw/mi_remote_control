@@ -120,7 +120,7 @@ struct MappingPage: View {
                 .frame(width: 190)
             Text("深色圆键为遥控器实体按键位置示意，选中的按键以强调色描边高亮")
                 .font(.footnote)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(width: 190)
         }

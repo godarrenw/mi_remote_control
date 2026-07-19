@@ -97,10 +97,10 @@ struct GeneralPage: View {
                                     .frame(width: 56, alignment: .trailing)
                             }
                             Text("默认 250 ms：只对配了双击动作的键生效（这类键短按需等窗口确认），未配双击的键短按始终零延迟；设为 0 完全关闭双击。")
-                                .font(.footnote).foregroundStyle(.tertiary)
+                                .font(.footnote).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             Text("基础状态为文字输入：方向、确认、删除固定保持原生语义；App 快捷动作仅在第二功能、导航模式或明确组合手势中生效。")
-                                .font(.footnote).foregroundStyle(.tertiary)
+                                .font(.footnote).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .padding(.top, 8)

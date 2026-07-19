@@ -220,7 +220,9 @@ final class MappingQuickLookController {
         p.isReleasedWhenClosed = false
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.contentView = host
-        p.setContentSize(NSSize(width: 840, height: 570))
+        // 高度尽量容纳全部 13 行（约 820pt），超出屏幕 85% 时回退为内部滚动，避免底部硬裁切
+        let maxHeight = (NSScreen.main?.visibleFrame.height ?? 900) * 0.85
+        p.setContentSize(NSSize(width: 840, height: min(820, maxHeight)))
         p.center()
         panel = p
         isVisible = true
