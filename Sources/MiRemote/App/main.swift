@@ -37,6 +37,24 @@ while let argument = args.first {
               ? "—— 存在需要你处理的项，请按上面的指引操作后重跑 --doctor。"
               : "—— 全部检查通过。")
         exit(report.exitCode)
+    case "--claude-hooks":
+        let sub = args.isEmpty ? "" : args.removeFirst()
+        switch sub {
+        case "install":
+            let result = ClaudeHooks.install()
+            print(result.message)
+            exit(result.code)
+        case "uninstall":
+            let result = ClaudeHooks.uninstall()
+            print(result.message)
+            exit(result.code)
+        case "status":
+            print(ClaudeHooks.status())
+            exit(0)
+        default:
+            FileHandle.standardError.write("--claude-hooks 需要参数 install|uninstall|status\n".data(using: .utf8)!)
+            exit(2)
+        }
     case "--login-item":
         guard !args.isEmpty, let command = LoginItemCommand(rawValue: args.removeFirst()) else {
             FileHandle.standardError.write("--login-item 需要参数 on|off|status\n".data(using: .utf8)!)
@@ -99,7 +117,7 @@ while let argument = args.first {
         print("miremote --ui-preview        GUI 但不启动引擎（开发验证）")
         print("miremote [--list-audio-devices] [--output <name>] [--wav <path>] [--gain <dB>] [--verbose]")
         print("         [--keys] [--config <path>] [--doubao] [--run-action '<action json>']")
-        print("         [--doctor] [--login-item on|off|status]")
+        print("         [--doctor] [--login-item on|off|status] [--claude-hooks install|uninstall|status]")
         exit(0)
     default:
         FileHandle.standardError.write("未知参数: \(argument)\n".data(using: .utf8)!)

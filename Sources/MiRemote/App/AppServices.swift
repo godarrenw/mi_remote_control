@@ -466,6 +466,8 @@ final class AppServices {
     let voiceApp: VoiceBridgeApp
     let bridge: ATVVBridge
     let health = HealthMonitor()
+    /// 等待批准提醒：本地 socket 收 Claude Code hook 事件（GUI/CLI 服务模式都监听）。
+    let eventListener = EventListener()
     private(set) var keyMapper: KeyMapperApp?
     private(set) var tapEngine: TapEngine?
     private(set) var hidFilter: IOHIDOnlyFilter?
@@ -548,6 +550,11 @@ final class AppServices {
             hid.start()
             log("按键映射已启用（hidutil 中转 + CGEventTap + IOHID 监听兜底）")
         }
+        eventListener.log = { log("EVENT \($0)") }
+        eventListener.onEvent = { event in
+            AgentNotifier.notify(event) { log("EVENT \($0)") }
+        }
+        eventListener.start()
         health.startPeriodicChecks()
         log("启动，输出设备: \(options.outputName ?? "系统默认")\(options.wavPath.map { "，WAV: \($0)" } ?? "")")
         bridge.start()
@@ -557,6 +564,7 @@ final class AppServices {
     func stop() {
         guard started else { return }
         started = false
+        eventListener.stop()
         health.stop()
         bridge.stop()
         tapEngine?.stop() // 恢复 hidutil 映射

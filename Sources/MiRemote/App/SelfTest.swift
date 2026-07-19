@@ -647,6 +647,75 @@ enum SelfTest {
         expect(KeyNameLookup.mods(fromRawFlags: 0x08 | 0x02).sorted() == ["left_cmd", "left_shift"]
                && KeyNameLookup.mods(fromRawFlags: 0x40) == ["right_option"],
                "KeyNameLookup 左右修饰位解析")
+        // EV-1. Agent 事件 JSON 行协议解析（合法/未知字段/非法/未知事件）
+        do {
+            let full = AgentEvent.parse(line:
+                #"{"event":"waiting_approval","source":"claude-code","session":"s1","cwd":"/p","message":"批准?","extra":123}"#)
+            expect(full == AgentEvent(kind: .waitingApproval, source: "claude-code",
+                                      session: "s1", cwd: "/p", message: "批准?"),
+                   "AgentEvent 合法行解析（未知字段忽略）")
+            expect(AgentEvent.parse(line: #"{"event":"agent_done"}"#)?.kind == .agentDone
+                   && AgentEvent.parse(line: #"{"event":"agent_done"}"#)?.session == "",
+                   "AgentEvent 缺省字段取空串")
+            expect(AgentEvent.parse(line: "not json") == nil, "AgentEvent 非法 JSON 丢弃")
+            expect(AgentEvent.parse(line: #"{"event":"reboot"}"#) == nil, "AgentEvent 未知事件丢弃")
+        }
+
+        // EV-2. socket 路径生成 + 等待列表状态机（同 session 去重、done 移除）
+        do {
+            expect(EventListener.socketPath().hasSuffix("/MiRemote/events.sock"),
+                   "events.sock 路径生成", EventListener.socketPath())
+            let listener = EventListener()
+            listener.track(AgentEvent(kind: .waitingApproval, source: "cc", session: "a", cwd: "/1", message: "m1"))
+            listener.track(AgentEvent(kind: .agentNeedsInput, source: "cc", session: "b", cwd: "/2", message: "m2"))
+            listener.track(AgentEvent(kind: .waitingApproval, source: "cc", session: "a", cwd: "/1", message: "m3"))
+            expect(listener.pendingApprovals.count == 2
+                   && listener.pendingApprovals.first { $0.session == "a" }?.message == "m3",
+                   "pendingApprovals 同 session 去重更新")
+            listener.track(AgentEvent(kind: .agentDone, source: "cc", session: "a", cwd: "/1", message: ""))
+            expect(listener.pendingApprovals.map(\.session) == ["b"], "agent_done 移除对应 session")
+        }
+
+        // EV-3. Claude hooks 注入合并：幂等 + 保留用户已有条目 + 卸载还原（临时目录实测文件操作）
+        do {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("miremote-hooks-test-\(ProcessInfo.processInfo.processIdentifier)")
+            defer { try? FileManager.default.removeItem(at: dir) }
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let settings = dir.appendingPathComponent("settings.json")
+            let script = dir.appendingPathComponent("miremote-notify.sh")
+            let original = """
+            {"model":"opus","hooks":{"Notification":[{"matcher":"*","hooks":[{"type":"command","command":"other-tool.sh"}]}],\
+            "Stop":[{"hooks":[{"type":"command","command":"other-tool.sh stop"}]}]}}
+            """
+            try? Data(original.utf8).write(to: settings)
+
+            expect(ClaudeHooks.install(settings: settings, script: script).code == 0, "hooks install 成功")
+            expect(FileManager.default.isExecutableFile(atPath: script.path), "发信脚本已写入且可执行")
+            expect(FileManager.default.fileExists(atPath: settings.appendingPathExtension("miremote-bak").path),
+                   "安装前已备份 settings.json")
+            let read = { () -> [String: Any] in
+                (try? JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as? [String: Any]) ?? [:]
+            }
+            let afterInstall = read()
+            expect(ClaudeHooks.installed(settings: settings), "install 后 status=已安装")
+            let notif = (afterInstall["hooks"] as? [String: Any])?["Notification"] as? [[String: Any]] ?? []
+            expect(notif.count == 3 && notif.contains { $0["matcher"] as? String == "permission_prompt" }
+                   && notif.contains { $0["matcher"] as? String == "agent_needs_input" }
+                   && notif.contains { $0["matcher"] as? String == "*" },
+                   "注入 permission_prompt/agent_needs_input 且保留用户已有条目", "\(notif.count)")
+            _ = ClaudeHooks.install(settings: settings, script: script)
+            expect(NSDictionary(dictionary: read()).isEqual(to: afterInstall), "再次 install 幂等（内容不变）")
+
+            expect(ClaudeHooks.uninstall(settings: settings, script: script).code == 0, "hooks uninstall 成功")
+            let afterUninstall = read()
+            let origObj = (try? JSONSerialization.jsonObject(with: Data(original.utf8)) as? [String: Any]) ?? [:]
+            expect(NSDictionary(dictionary: afterUninstall).isEqual(to: origObj),
+                   "uninstall 只删自己的条目，还原为原始配置")
+            expect(!FileManager.default.fileExists(atPath: script.path), "uninstall 移除发信脚本")
+            expect(!ClaudeHooks.installed(settings: settings), "uninstall 后 status=未安装")
+        }
+
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")
         return failures == 0 ? 0 : 1
     }
