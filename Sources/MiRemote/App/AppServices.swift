@@ -99,6 +99,16 @@ func migrateConfigIfNeeded(_ input: MappingConfig) -> MappingConfig {
         migrateToMentalModelV2(&cfg)
         cfg.version = 4
     }
+    if cfg.version < 5 {
+        // Home 双击不能连续执行两次“显示桌面”（结果是一来一回）；
+        // 为双击设置独立语义后，MappingEngine 会在双击窗口内决断单/双击。
+        var g = cfg.profiles["global"] ?? [:]
+        var home = g["home"] ?? KeyBinding()
+        home.double = .system("mission_control")
+        g["home"] = home
+        cfg.profiles["global"] = g
+        cfg.version = 5
+    }
     return cfg
 }
 
@@ -186,6 +196,7 @@ func defaultConfig() -> MappingConfig {
                               layers: ["1": .system("next_app")]),
         "home":    KeyBinding(tap: .system("show_desktop"),
                               hold: .overlay("tutorial"),
+                              double: .system("mission_control"),
                               layers: ["1": .system("mission_control")]),
         // TV 单击 = 进/出 App 控制模式（层2；HUD 由 GUI 随层变化显示）；
         // 长按 = App 轮盘浮层（停留式：弹出后可松手，方向选、OK/再按 TV 确认、

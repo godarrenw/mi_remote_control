@@ -154,6 +154,7 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
         case "prev", "previous": aux(NX_KEYTYPE_PREVIOUS)
         case "mission_control":
             // 直接打开 Mission Control.app 比合成 Ctrl+Up 可靠（合成键在部分 macOS 版本无效）。
+            TransientSystemUI.markMissionControlEntered()
             run(process: "/usr/bin/open", ["-a", "Mission Control"])
         case "launchpad":
             // macOS 26(Tahoe) 移除了 Launchpad.app。存在则开，否则退回 Spotlight(Cmd+Space)。

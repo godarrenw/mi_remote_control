@@ -501,6 +501,14 @@ final class MappingEngine: @unchecked Sendable {
 
     /// 短按分发：层激活时优先 `layers["\(层)"]`，缺失退回 `tap`。
     private func fireTap(_ key: RemoteKey) {
+        // 从 MiRemote 打开 Mission Control 后，菜单键的首要语义是退出该系统态。
+        // 发 Esc 比再次 open Mission Control.app 可靠，并且只消费一次。
+        if effectiveLayer == 0, key == .menu,
+           TransientSystemUI.consumeMissionControlMenuExit() {
+            runner.run(.keyStroke(key: "escape", mods: []))
+            log("MENU 退出 Mission Control")
+            return
+        }
         let b = binding(for: key)
         let layer = effectiveLayer
         let action: Action?
@@ -815,6 +823,16 @@ extension MappingEngine {
             c.advance(1)
             expect(e.tapRoute.effectiveLayer == 0, "F1 idle timeout returns to base layer")
             expect(d.layers == [2, 0], "F1 idle timeout emits layerChanged(0)")
+        }
+
+        // 场景 F1b：调度中心由遥控打开后，下一次菜单短按发 Esc 退出，不跑普通菜单映射。
+        do {
+            let (e, r, _, c) = makeEngine()
+            TransientSystemUI.markMissionControlEntered()
+            down(e, .menu); c.advance(10); up(e, .menu)
+            expect(r.actions == [.keyStroke(key: "escape", mods: [])],
+                   "F1b menu exits Mission Control with Escape")
+            TransientSystemUI.clearMissionControlExit()
         }
 
         // 场景 F2：基础态 OK/back 的 App overlay 不能篡改；长按清空仅由显式设置开启。

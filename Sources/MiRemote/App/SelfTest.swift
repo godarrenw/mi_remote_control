@@ -795,6 +795,14 @@ enum SelfTest {
         // v2-3. show_desktop 走 Mission Control 系统入口，不依赖用户 Fn/F11 快捷键偏好。
         expect(WorkspaceActions.shortcuts[.showDesktop] == nil,
                "show_desktop 使用直接系统入口而非易失效的 Fn+F11")
+        TransientSystemUI.markMissionControlEntered(nowNs: 100)
+        expect(TransientSystemUI.consumeMissionControlMenuExit(nowNs: 101),
+               "Mission Control 进入后菜单键退出令牌可消费")
+        expect(!TransientSystemUI.consumeMissionControlMenuExit(nowNs: 102),
+               "Mission Control 退出令牌只消费一次")
+        TransientSystemUI.markMissionControlEntered(nowNs: 100)
+        expect(!TransientSystemUI.consumeMissionControlMenuExit(nowNs: 21_000_000_000),
+               "Mission Control 退出令牌超时自动作废")
 
         // v2-4. 浮层数据模型：系统功能菜单目录 + 网格移动纯逻辑。
         expect(SystemMenuCatalog.selfCheck(), "系统功能菜单目录/网格移动自测")
@@ -804,8 +812,9 @@ enum SelfTest {
             let cfg = defaultConfig()
             let g = cfg.profiles["global"]
             expect(g?["home"]?.tap == .system("show_desktop")
-                   && g?["home"]?.hold == .overlay("tutorial"),
-                   "默认配置 v2：Home=显示桌面/教程浮层")
+                   && g?["home"]?.hold == .overlay("tutorial")
+                   && g?["home"]?.double == .system("mission_control"),
+                   "默认配置 v2：Home=显示桌面/教程浮层/双击调度中心")
             expect(g?["menu"]?.tap == .overlay("window_picker")
                    && g?["menu"]?.hold == .overlay("system_menu"),
                    "默认配置 v2：菜单=窗口选择器/系统功能菜单")
@@ -844,7 +853,7 @@ enum SelfTest {
                    "控制模式 HUD 键位表数据源")
         }
 
-        // v2-6. v3→v4 迁移：TV 双击旧接线清除、层2 音量改切 Agent、旧 per-app TV tap 让位。
+        // v2-6. v3→当前版本迁移：心智模型 v2 + Home 双击调度中心。
         do {
             var old = MappingConfig()
             old.version = 3
@@ -868,13 +877,14 @@ enum SelfTest {
             ]
             let cfg = migrateConfigIfNeeded(old)
             let g = cfg.profiles["global"]
-            expect(cfg.version == 4
+            expect(cfg.version == MappingConfig.currentVersion
                    && g?["home"]?.tap == .system("show_desktop")
+                   && g?["home"]?.double == .system("mission_control")
                    && g?["menu"]?.tap == .overlay("window_picker")
                    && g?["tv"]?.tap == .layerToggle(2)
                    && g?["tv"]?.double == nil
                    && g?["tv"]?.layers?["2"] == nil,
-                   "v3→v4 心智模型 v2 骨架改写")
+                   "v3→v5 心智模型 v2 + Home 双击语义")
             expect(g?["volUp"]?.layers?["2"] == .tabJump(dir: 1, index: nil)
                    && g?["volDown"]?.layers?["2"] == .tabJump(dir: -1, index: nil)
                    && g?["ok"]?.hold == nil

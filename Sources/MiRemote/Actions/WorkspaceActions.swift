@@ -1,6 +1,33 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import os
+
+/// 由遥控器打开的 Mission Control 是一个短暂系统态：进入后的下一次菜单键
+/// 应该先退出它，而不是又打开 MiRemote 窗口选择器。
+enum TransientSystemUI {
+    private static let exitWindowNs: UInt64 = 20_000_000_000
+    private static let missionControlDeadline = OSAllocatedUnfairLock(initialState: UInt64(0))
+
+    static func markMissionControlEntered(nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        missionControlDeadline.withLock { $0 = nowNs &+ exitWindowNs }
+    }
+
+    static func consumeMissionControlMenuExit(nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds) -> Bool {
+        missionControlDeadline.withLock { deadline in
+            guard deadline != 0, nowNs <= deadline else {
+                deadline = 0
+                return false
+            }
+            deadline = 0
+            return true
+        }
+    }
+
+    static func clearMissionControlExit() {
+        missionControlDeadline.withLock { $0 = 0 }
+    }
+}
 
 /// 适合遥控器触发的 macOS 工作区动作。
 ///
