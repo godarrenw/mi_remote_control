@@ -12,7 +12,7 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var statusController: StatusItemController?
     private var badgeController: FloatingBadgeController?
-    private var mappingQuickLookController: MappingQuickLookController?
+    private var overlayCenter: OverlayCenter?
 
     init(uiPreview: Bool) {
         self.uiPreview = uiPreview
@@ -32,7 +32,14 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self.services = services
 
         model = AppModel(services: services)
-        mappingQuickLookController = MappingQuickLookController(model: model)
+
+        // M5 v2 浮层体系：窗口选择器 / 系统功能菜单 / 教程浮层（捕获式）+ 控制模式 HUD。
+        let center = OverlayCenter(model: model, services: services)
+        overlayCenter = center
+        ActionRunner.onOverlay = { name in
+            // ActionRunner 已切主线程投递
+            MainActor.assumeIsolated { center.open(name) }
+        }
 
         // 服务事件 → 主线程 → AppModel
         wireCallbacks(services: services, levelSink: levelSink)
@@ -173,7 +180,10 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self, let km = services.keyMapper, let filter = services.hidFilter else { return }
             km.onLayerChanged = { [weak self] layer in
-                DispatchQueue.main.async { self?.model.noteLayer(layer) }
+                DispatchQueue.main.async {
+                    self?.model.noteLayer(layer)
+                    self?.overlayCenter?.noteLayer(layer)   // 层2=App 控制模式 HUD
+                }
             }
             let healthSeize = km.onSeizeState
             km.onSeizeState = { [weak self] ok in
@@ -182,13 +192,6 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             km.onButtonEvent = { [weak self] ev in
                 DispatchQueue.main.async { self?.model.noteButton(ev) }
-            }
-            km.onMappingQuickLook = { [weak self] visible, bundleID, appName in
-                DispatchQueue.main.async {
-                    self?.mappingQuickLookController?.setVisible(visible,
-                                                                bundleID: bundleID,
-                                                                appName: appName)
-                }
             }
             // IOHID 原始通道：全部 13 键的「按下即亮」与识别按键都靠它。
             filter.onRawButton = { [weak self] ev in

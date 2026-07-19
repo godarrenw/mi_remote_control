@@ -12,11 +12,9 @@ import Foundation
 //    合并进 config.profiles["global"]，其绑定全部写在 KeyBinding.layers["2"] 上，
 //    即「层 2 激活时的 tap 替代」。层 1 已被 M3 默认配置（音量微调）占用，故 AI 批准层用层 2。
 //
-// 2) 进入 / 退出层 2 的触发方式尚未接线 —— 交由主会话在默认配置里定。建议：
-//      TV 键 double = layer_toggle(2)     （粘性开关，进/出 AI 批准模式）
-//    或 某键 hold  = layer_momentary(2)   （按住即层 2，松开回基础层）
-//    注意：TV 在 aiApprovalLayer 里 layers["2"] 已被占为「数字 1」，
-//    但 TV 的 base double 槽仍空闲，两者不冲突，可同时写。
+// 2) 进入 / 退出层 2（App 控制模式）的触发：v2 心智模型定为 TV 单击 = layer_toggle(2)
+//    （见 defaultConfig / migrateToMentalModelV2）。预设不写 TV 的 base 槽位，
+//    aiApprovalLayer 也不占 TV 的 layers["2"]——留空让 tap 回退 layerToggle(2) 以便退出模式。
 //
 // 3) 「长按 OK = Esc 中断」无法用当前 KeyBinding 模型在层内表达：
 //    KeyBinding.layers 只提供 tap 替代，没有 per-layer 的 hold/double 槽。
@@ -51,15 +49,16 @@ enum Presets {
         .macro(steps: [.action(.system(systemAction)), .delay(ms: 250), .action(.focusInput)])
     }
 
-    /// 老配置升级时补齐四向手势和 AI 层入口；slot 级合并不会覆盖用户已有设置。
+    /// 老配置升级时补齐四向手势与各层内绑定；slot 级合并不会覆盖用户已有设置。
+    /// v2 起系统导航键（Home/菜单/TV）的 base 槽位由 defaultConfig / v4 迁移负责，
+    /// 预设不再写 menu.tap / tv 的 base 触发位（避免劫持窗口选择器与控制模式入口）。
     static let coreGestures = Preset(
         id: "core_gestures",
         displayName: "四向效率手势",
-        note: "按住 OK + 方向触发四向手势。按住 TV 进入快捷控制模式；TV 双击进入/退出 AI 助手模式。",
+        note: "按住 OK + 方向触发四向手势；OK 长按进入快捷控制模式；TV 单击进入/退出 App 控制模式。",
         bundleID: nil,
         bindings: [
-            "menu": KeyBinding(tap: .layerToggle(3),
-                               layers: ["1": .system("next_app"), "3": .layerToggle(3)]),
+            "menu": KeyBinding(layers: ["1": .system("next_app"), "3": .layerToggle(3)]),
             // 导航模式（菜单键点一下进入/退出）：切换后自动把光标送回输入位置。
             "left": KeyBinding(layers: ["1": .system("space_left"),
                                         "3": switchAndFocus("previous_app")]),
@@ -77,8 +76,7 @@ enum Presets {
             "home": KeyBinding(layers: ["1": .system("show_desktop"), "2": ks("c", ["left_ctrl"]),
                                         "3": .system("space_right")]),
             "power": KeyBinding(layers: ["3": .system("show_desktop")]),
-            "tv": KeyBinding(hold: .layerMomentary(1), double: .layerToggle(2),
-                             layers: ["1": .system("app_expose"), "3": .system("app_expose")]),
+            "tv": KeyBinding(layers: ["1": .system("app_expose"), "3": .system("app_expose")]),
         ]
     )
 
@@ -89,11 +87,12 @@ enum Presets {
     // 键位依据：scratchpad/feature-menu.md §1A（权威查证表）。
     static let aiApprovalLayer = Preset(
         id: "ai_approval",
-        displayName: "AI 助手模式（通用）",
+        displayName: "App 控制模式 · AI 批准（通用）",
         note: """
-        双击 TV 开关 AI 助手模式：OK=批准(Enter/选第1项)、返回=Esc(拒绝/关弹窗)、\
-        上下=选项导航、菜单=Shift+Tab 切自动模式、TV/音量+/−=数字 1/2/3 直选第 1/2/3 项。\
-        主页键=Ctrl+C 中断，电源键=回到输入位置。适用于 Codex、Claude Code、Gemini、aider、opencode。
+        TV 单击进/出 App 控制模式（层2，弹操作提示 HUD）：OK=批准(Enter)、返回=Esc(拒绝/关弹窗)、\
+        上下=选项导航、音量+/−=切 Agent（下一个/上一个标签 ⌘⇧]/[）、菜单=Shift+Tab 切自动模式、\
+        主页键=Ctrl+C 中断，电源键=回到输入位置；再按 TV 退出。\
+        适用于 Codex、Claude Code、Gemini、aider、opencode 等终端类 App。
         """,
         bundleID: nil,
         bindings: [
@@ -104,9 +103,9 @@ enum Presets {
             "menu":    KeyBinding(layers: ["2": ks("tab", ["left_shift"])]),   // Shift+Tab 切自动模式
             "home":    KeyBinding(layers: ["2": ks("c", ["left_ctrl"])]),      // 中断当前生成/任务
             "power":   KeyBinding(layers: ["2": .focusInput]),                  // 回到输入位置
-            "tv":      KeyBinding(layers: ["2": ks("1")]),                     // 直选第 1 项（Yes）
-            "volUp":   KeyBinding(layers: ["2": ks("2")]),                     // 直选第 2 项
-            "volDown": KeyBinding(layers: ["2": ks("3")]),                     // 直选第 3 项
+            // TV 不写层2：让 tap 回退 base 的 layerToggle(2)，保证「再按 TV 退出模式」。
+            "volUp":   KeyBinding(layers: ["2": .tabJump(dir: 1, index: nil)]),   // 下一个 Agent/标签
+            "volDown": KeyBinding(layers: ["2": .tabJump(dir: -1, index: nil)]),  // 上一个 Agent/标签
         ]
     )
 
@@ -126,7 +125,7 @@ enum Presets {
         id: "multi_agent",
         displayName: "多 agent 定位批准",
         note: """
-        AI 助手模式中左/右 = 上一个/下一个标签（cmd+shift+[ / ]，Ghostty/浏览器/VS Code 通用），\
+        App 控制模式中左/右 = 上一个/下一个标签（cmd+shift+[ / ]，Ghostty/浏览器/VS Code 通用），\
         先定位到目标 agent 标签再按 OK 批准。
         """,
         bundleID: nil,
@@ -142,7 +141,7 @@ enum Presets {
     static let ghosttyAI = Preset(
         id: "ai_ghostty",
         displayName: "Ghostty · Codex / Claude Code",
-        note: "左右切 Tab，上下选 CLI 选项，OK=确认、长按=Ctrl+C，返回=Esc、长按=Ctrl+U 清行。按住 TV + 方向切同一 Tab 内的 split；菜单键进入 App 导航模式。",
+        note: "左右切 Tab，上下选 CLI 选项，OK=确认、长按=Ctrl+C，返回=Esc、长按=Ctrl+U 清行。TV 单击进 App 控制模式，长按=新建 Tab ⌘T（App 主操作）。",
         bundleID: "com.mitchellh.ghostty",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil),
@@ -158,17 +157,16 @@ enum Presets {
                 "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
             ], layers: ["1": ks("return", ["left_cmd", "left_shift"])]),
             "back": KeyBinding(tap: ks("escape"), hold: ks("u", ["left_ctrl"])),
-            "menu": KeyBinding(tap: .layerToggle(3)),
             "home": KeyBinding(tap: .focusInput),
-            "tv": KeyBinding(tap: ks("return", ["left_cmd", "left_shift"]),
-                             hold: .layerMomentary(1), double: .layerToggle(2)),
+            // TV 主操作：新建 Tab（与全局默认一致，显式声明便于用户按 App 改）
+            "tv": KeyBinding(hold: ks("t", ["left_cmd"])),
         ]
     )
 
     static let codexDesktop = Preset(
         id: "ai_codex_desktop",
         displayName: "Codex 桌面版",
-        note: "上下选择，左右切任务标签，OK=确认，返回=Esc，主页键聚焦输入框；菜单键进入 App 导航，TV 双击进入 AI 助手模式。",
+        note: "上下选择，左右切任务标签，OK=确认，返回=Esc，主页键聚焦输入框；TV 单击进 App 控制模式。",
         bundleID: "com.openai.codex",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
@@ -180,16 +178,14 @@ enum Presets {
                 "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
             ]),
             "back": KeyBinding(tap: ks("escape")),
-            "menu": KeyBinding(tap: .layerToggle(3)),
             "home": KeyBinding(tap: .focusInput),
-            "tv": KeyBinding(tap: ks("1"), hold: .layerMomentary(1), double: .layerToggle(2)),
         ]
     )
 
     static let chrome = Preset(
         id: "browser_chrome",
         displayName: "Google Chrome",
-        note: "左右切标签，上下翻页，OK=确认，返回=浏览器后退，主页键=地址栏，菜单=新标签；OK 四向手势可切窗口和标签。",
+        note: "左右切标签，上下翻页，OK=确认，返回=浏览器后退，主页键=地址栏；TV 长按=新标签 ⌘T（App 主操作）。",
         bundleID: "com.google.Chrome",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
@@ -202,14 +198,14 @@ enum Presets {
             ]),
             "back": KeyBinding(tap: ks("left_bracket", ["left_cmd"])),
             "home": KeyBinding(tap: ks("l", ["left_cmd"])),
-            "menu": KeyBinding(tap: .layerToggle(3), hold: ks("t", ["left_cmd"])),
+            "tv": KeyBinding(hold: ks("t", ["left_cmd"])),
         ]
     )
 
     static let claudeDesktop = Preset(
         id: "ai_claude_desktop",
         displayName: "Claude 桌面版",
-        note: "上下选择，左右切标签，OK=确认，返回=Esc，主页键聚焦输入框；菜单键进入 App 导航，TV 双击进入 AI 助手模式。",
+        note: "上下选择，左右切标签，OK=确认，返回=Esc，主页键聚焦输入框；TV 单击进 App 控制模式。",
         bundleID: "com.anthropic.claudefordesktop",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
@@ -221,16 +217,14 @@ enum Presets {
                 "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
             ]),
             "back": KeyBinding(tap: ks("escape")),
-            "menu": KeyBinding(tap: .layerToggle(3)),
             "home": KeyBinding(tap: .focusInput),
-            "tv": KeyBinding(tap: ks("1"), hold: .layerMomentary(1), double: .layerToggle(2)),
         ]
     )
 
     static let safari = Preset(
         id: "browser_safari",
         displayName: "Safari",
-        note: "左右切标签，上下翻页，OK=确认，返回=后退，主页键=地址栏，菜单=新标签；OK 四向手势可切窗口和标签。",
+        note: "左右切标签，上下翻页，OK=确认，返回=后退，主页键=地址栏；TV 长按=新标签 ⌘T（App 主操作）。",
         bundleID: "com.apple.Safari",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
@@ -243,14 +237,14 @@ enum Presets {
             ]),
             "back": KeyBinding(tap: ks("left_bracket", ["left_cmd"])),
             "home": KeyBinding(tap: ks("l", ["left_cmd"])),
-            "menu": KeyBinding(tap: .layerToggle(3), hold: ks("t", ["left_cmd"])),
+            "tv": KeyBinding(hold: ks("t", ["left_cmd"])),
         ]
     )
 
     static let weChat = Preset(
         id: "chat_wechat",
         displayName: "微信",
-        note: "上下浏览会话/消息，OK=发送，返回=Esc，主页键=搜索，菜单=新建聊天；OK+上下切窗口/调度中心。",
+        note: "上下浏览会话/消息，OK=发送，返回=Esc，主页键=搜索；TV 长按=新建聊天 ⌘N（App 主操作）。",
         bundleID: "com.tencent.xinWeChat",
         bindings: [
             "up": KeyBinding(tap: ks("up_arrow")),
@@ -263,7 +257,7 @@ enum Presets {
             ]),
             "back": KeyBinding(tap: ks("escape")),
             "home": KeyBinding(tap: ks("f", ["left_cmd"])),
-            "menu": KeyBinding(tap: .layerToggle(3), hold: ks("n", ["left_cmd"])),
+            "tv": KeyBinding(hold: ks("n", ["left_cmd"])),
         ]
     )
 

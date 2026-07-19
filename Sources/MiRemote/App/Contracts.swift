@@ -62,6 +62,9 @@ enum Action: Codable, Equatable {
     case focusInput                               // 自动聚焦前台 app 输入框（三级兜底）
     case mouseMode                                // toggle 进入/退出鼠标模式
     case macro(steps: [MacroStep])                // 多步序列
+    // M5 v2 心智模型：打开一个 GUI 浮层（window_picker / system_menu / tutorial）。
+    // CLI 模式无 GUI，执行时仅记日志。名字用 String 保持向前兼容（新增浮层不改契约）。
+    case overlay(String)
     case none
 
     private enum K: String, CodingKey { case type, key, mods, value, scope, dir, index, steps }
@@ -82,6 +85,7 @@ enum Action: Codable, Equatable {
         case "focus_input":  self = .focusInput
         case "mouse_mode":   self = .mouseMode
         case "macro":        self = .macro(steps: try c.decodeIfPresent([MacroStep].self, forKey: .steps) ?? [])
+        case "overlay":      self = .overlay(try c.decode(String.self, forKey: .value))
         case "none":         self = .none
         case let other:
             // 严格解码：未知 type 抛错而非静默降级为 .none，拼写错误在加载配置时即暴露
@@ -108,6 +112,7 @@ enum Action: Codable, Equatable {
         case .focusInput:       try c.encode("focus_input", forKey: .type)
         case .mouseMode:        try c.encode("mouse_mode", forKey: .type)
         case .macro(let steps): try c.encode("macro", forKey: .type); try c.encode(steps, forKey: .steps)
+        case .overlay(let v):   try c.encode("overlay", forKey: .type); try c.encode(v, forKey: .value)
         case .none:             try c.encode("none", forKey: .type)
         }
     }
@@ -161,7 +166,7 @@ struct VoiceTriggerRule: Codable, Equatable {
 }
 
 struct MappingConfig: Codable {
-    static let currentVersion = 3
+    static let currentVersion = 4   // v4 = 按键心智模型 v2（DESIGN §3.1b）
     struct Settings: Codable {
         var holdMs: Int = 350
         var doubleMs: Int = 300      // 给 TV 双击切 AI 模式留出可操作窗口

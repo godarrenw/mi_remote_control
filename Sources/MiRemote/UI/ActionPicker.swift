@@ -153,6 +153,11 @@ struct ActionPicker: View {
                     Button(modeDisplayName(n)) { onChange(.layerToggle(n)) }
                 }
             }
+            Menu("打开浮层") {
+                ForEach(ActionSummary.overlayNames, id: \.value) { item in
+                    Button(item.display) { onChange(.overlay(item.value)) }
+                }
+            }
         } label: {
             Text(ActionSummary.describe(action))
                 .lineLimit(1)

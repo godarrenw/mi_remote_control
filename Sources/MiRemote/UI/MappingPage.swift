@@ -199,7 +199,7 @@ struct MappingPage: View {
 
             // 分组 C：第二功能模式（底层仍沿用 layer 配置格式，UI 不暴露术语）
             DisclosureGroup {
-                Text("功能模式类似遥控器的 Fn：按住 TV 使用快捷控制（切 App、桌面空间等）；双击 TV 开关 AI 助手模式（批准、拒绝、切换 agent）。")
+                Text("功能模式类似遥控器的 Fn：按住 OK 使用快捷控制（切 App、桌面空间等）；单击 TV 进出 App 控制模式（批准、拒绝、切换 agent，屏幕角落有键位提示）。")
                     .font(.caption).foregroundStyle(.secondary).padding(.bottom, 4)
                 SettingsGroup(title: "模式开启时，这个键执行") {
                     ForEach(1...3, id: \.self) { layer in
@@ -220,7 +220,7 @@ struct MappingPage: View {
                 Text("第二功能模式（高级）").font(.callout)
             }
 
-            Text("绑定组合键可点击「录制快捷键」。如果不确定当前状态，可再双击 TV 键退出 AI 助手模式。")
+            Text("绑定组合键可点击「录制快捷键」。如果不确定当前状态，可再按一下 TV 键退出 App 控制模式。")
                 .font(.system(size: 11))
                 .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
         }

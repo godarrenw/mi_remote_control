@@ -14,6 +14,9 @@ struct TapRoute: Sendable {
     /// 「纯原生 tap」的方向键集合：tap=对应原生方向键 keyStroke 且无 hold/double。
     /// layers 允许存在——层激活与否由 effectiveLayer 单独把关。
     var nativeDirections: Set<RemoteKey> = []
+    /// M5 v2 浮层捕获态：true=有浮层打开，遥控键（含方向键）必须全部吞给引擎，
+    /// 由引擎转发给浮层的 OverlayKeyHandler，绝不透传原生方向键。
+    var uiCapture: Bool = false
 }
 
 /// 按键映射状态机（DESIGN.md §3.1-§3.3）。
@@ -93,6 +96,10 @@ final class MappingEngine: @unchecked Sendable {
     /// ok 键物理按住标记（快照用，独立于 states 的相位机）。
     private var okPhysicallyDown = false
 
+    /// 浮层键捕获（M5 v2「UI 模态路由」）：非 nil 时按键事件不走动作分发，
+    /// 经 mainDispatch 投递到主线程交给浮层处理；浮层关闭（置 nil）即恢复。
+    private var overlayHandler: ((ButtonEvent) -> Void)?
+
     // MARK: - 分流快照（tap 回调线程读，引擎 queue 写）
 
     /// okDown 竞争窗口（已消除）：ok 按下与方向键几乎同时到达时，本快照的 okDown
@@ -115,7 +122,8 @@ final class MappingEngine: @unchecked Sendable {
         let native: Set<RemoteKey> = [.up, .down, .left, .right]
         let route = TapRoute(effectiveLayer: effectiveLayer,
                              okDown: okPhysicallyDown,
-                             nativeDirections: native)
+                             nativeDirections: native,
+                             uiCapture: overlayHandler != nil)
         tapRouteLock.withLock { $0 = route }
     }
 
@@ -129,6 +137,8 @@ final class MappingEngine: @unchecked Sendable {
     private let dispatch: (@escaping () -> Void) -> Void
     /// 延迟 ms 毫秒后在执行上下文回调（生产=queue.asyncAfter；测试=虚拟时钟登记）。
     private let scheduleAfter: (Int, @escaping () -> Void) -> Void
+    /// 浮层回调投递到主线程（生产=DispatchQueue.main.async；测试=同步就地执行）。
+    private let mainDispatch: (@escaping () -> Void) -> Void
 
     // MARK: - 初始化
 
@@ -141,7 +151,8 @@ final class MappingEngine: @unchecked Sendable {
                   dispatch: { work in queue.async(execute: work) },
                   scheduleAfter: { ms, work in
                       queue.asyncAfter(deadline: .now() + .milliseconds(max(0, ms)), execute: work)
-                  })
+                  },
+                  mainDispatch: { work in DispatchQueue.main.async(execute: work) })
     }
 
     /// 指定初始化：注入调度闭包，供 selfCheck 用同步/虚拟时钟驱动。
@@ -149,12 +160,14 @@ final class MappingEngine: @unchecked Sendable {
                  runner: ActionRunning,
                  delegate: MappingEngineDelegate?,
                  dispatch: @escaping (@escaping () -> Void) -> Void,
-                 scheduleAfter: @escaping (Int, @escaping () -> Void) -> Void) {
+                 scheduleAfter: @escaping (Int, @escaping () -> Void) -> Void,
+                 mainDispatch: @escaping (@escaping () -> Void) -> Void = { $0() }) {
         self.config = config
         self.runner = runner
         self.delegate = delegate
         self.dispatch = dispatch
         self.scheduleAfter = scheduleAfter
+        self.mainDispatch = mainDispatch
         self.globalProfile = config.profiles["global"] ?? [:]
         publishTapRoute()
     }
@@ -180,6 +193,16 @@ final class MappingEngine: @unchecked Sendable {
     /// 设备移除、系统睡眠、tap 失效恢复等可能丢 keyUp 的场景调用，防止卡键/卡层。
     func resetInputState(reason: String) {
         dispatch { [weak self] in self?._resetInputState(reason) }
+    }
+
+    /// M5 v2 浮层键捕获：handler 非 nil 时所有遥控键改喂浮层（主线程回调），
+    /// 置 nil 恢复正常动作分发。切换时复位输入运行态（清在途定时器/相位，防卡键）。
+    func setOverlayCapture(_ handler: ((ButtonEvent) -> Void)?) {
+        dispatch { [weak self] in
+            guard let self else { return }
+            self.overlayHandler = handler
+            self._resetInputState(handler != nil ? "浮层打开" : "浮层关闭")
+        }
     }
 
     // MARK: - 对外 API 实现（均在执行上下文内）
@@ -228,6 +251,11 @@ final class MappingEngine: @unchecked Sendable {
     }
 
     private func _handle(_ event: ButtonEvent) {
+        // 浮层捕获态：事件不进状态机，直接转交浮层（主线程）。
+        if let overlayHandler {
+            mainDispatch { overlayHandler(event) }
+            return
+        }
         if event.key == .ok, okPhysicallyDown != event.isDown {
             okPhysicallyDown = event.isDown
             publishTapRoute()
@@ -796,6 +824,56 @@ extension MappingEngine {
         expect(engine.tapRoute.nativeDirections == [.up, .down, .left, .right], "7 config cannot capture base arrows")
 
         if ok { print("[MappingEngine.tapRouteSelfCheck] all scenarios passed") }
+        return ok
+    }
+
+    /// M5 v2 uiCapture 路由纯逻辑自测：浮层打开时事件全部转交 handler、快照置位、
+    /// 方向键分流判定改吞给引擎；关闭后恢复正常分发。
+    static func uiCaptureSelfCheck() -> Bool {
+        var ok = true
+        func expect(_ cond: Bool, _ msg: String) {
+            if !cond { ok = false; print("[MappingEngine.uiCaptureSelfCheck] FAIL: \(msg)") }
+        }
+        let clock = ManualClock()
+        let runner = RecordingRunner()
+        let engine = MappingEngine(config: makeTestConfig(),
+                                   runner: runner,
+                                   delegate: nil,
+                                   dispatch: { $0() },
+                                   scheduleAfter: { ms, work in clock.schedule(ms, work) },
+                                   mainDispatch: { $0() })
+        func down(_ k: RemoteKey) { engine.handle(ButtonEvent(key: k, isDown: true, timeNs: 0)) }
+        func up(_ k: RemoteKey)   { engine.handle(ButtonEvent(key: k, isDown: false, timeNs: 0)) }
+
+        // 1) 初始：uiCapture=false，正常分发。
+        expect(!engine.tapRoute.uiCapture, "1 初始 uiCapture=false")
+        down(.back); clock.advance(10); up(.back)
+        expect(runner.actions == [.keyStroke(key: "delete", mods: [])], "1 捕获前正常 tap")
+        runner.actions.removeAll()
+
+        // 2) 打开浮层：快照置位，事件全部喂 handler，不再走动作分发。
+        var captured: [String] = []
+        engine.setOverlayCapture { ev in captured.append("\(ev.key.rawValue)\(ev.isDown ? "↓" : "↑")") }
+        expect(engine.tapRoute.uiCapture, "2 捕获态快照置位")
+        down(.left); up(.left); down(.ok); up(.ok); down(.menu); up(.menu)
+        clock.advance(500)
+        expect(runner.actions.isEmpty, "2 捕获期间无动作分发")
+        expect(captured == ["left↓", "left↑", "ok↓", "ok↑", "menu↓", "menu↑"], "2 事件全量转交浮层")
+
+        // 3) 捕获态下方向键分流判定：必须吞给引擎（不能原生放行），autorepeat 吞弃。
+        let r = engine.tapRoute
+        expect(KeyRemapper.directionVerdict(key: .up, isRepeat: false, route: r) == .engine,
+               "3 捕获态方向键 → engine")
+        expect(KeyRemapper.directionVerdict(key: .up, isRepeat: true, route: r) == .drop,
+               "3 捕获态 autorepeat → drop")
+
+        // 4) 关闭浮层：恢复正常分发，快照复位。
+        engine.setOverlayCapture(nil)
+        expect(!engine.tapRoute.uiCapture, "4 关闭后快照复位")
+        down(.back); clock.advance(10); up(.back)
+        expect(runner.actions == [.keyStroke(key: "delete", mods: [])], "4 关闭后恢复分发")
+
+        if ok { print("[MappingEngine.uiCaptureSelfCheck] passed") }
         return ok
     }
 

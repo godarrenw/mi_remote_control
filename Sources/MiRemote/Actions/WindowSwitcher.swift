@@ -95,4 +95,45 @@ enum WindowSwitcher {
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
         app.activate()
     }
+
+    // MARK: - M5 v2 窗口选择器数据源与激活
+
+    /// 选择器条目：CGWindowList 窗口 + 所属 App 的展示信息。
+    struct PickerEntry {
+        let window: WindowInfo
+        let appName: String
+        let bundleID: String?
+    }
+
+    /// 选择器候选（z 序前到后 ≈ MRU）。
+    /// - currentAppOnly=true：只列 pid == frontPid 的窗口（范围「当前 App」）。
+    /// - false：全部可见窗口（范围「所有 App」）。
+    static func pickerEntries(currentAppOnly: Bool, frontPid: pid_t?) -> [PickerEntry] {
+        visibleWindows().compactMap { info in
+            if currentAppOnly, info.pid != frontPid { return nil }
+            guard let app = NSRunningApplication(processIdentifier: info.pid) else { return nil }
+            return PickerEntry(window: info,
+                               appName: app.localizedName ?? "未知应用",
+                               bundleID: app.bundleIdentifier)
+        }
+    }
+
+    /// 激活指定窗口：app 前置 + 按标题 AXRaise 精确定位（复用全局切换的成熟逻辑）。
+    static func activate(_ target: WindowInfo) {
+        guard let app = NSRunningApplication(processIdentifier: target.pid) else { return }
+        app.activate()
+        guard !target.title.isEmpty else { return }
+        let axApp = AXUIElementCreateApplication(target.pid)
+        var winsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &winsRef) == .success,
+              let wins = winsRef as? [AXUIElement] else { return }
+        for w in wins {
+            var t: CFTypeRef?
+            if AXUIElementCopyAttributeValue(w, kAXTitleAttribute as CFString, &t) == .success,
+               let s = t as? String, s == target.title {
+                AXUIElementPerformAction(w, kAXRaiseAction as CFString)
+                return
+            }
+        }
+    }
 }
