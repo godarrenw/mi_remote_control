@@ -13,6 +13,8 @@ struct AgentEvent: Equatable {
         case waitingApproval = "waiting_approval"
         case agentDone       = "agent_done"
         case agentNeedsInput = "agent_needs_input"
+        /// 第二实例（用户再次打开 .app）请求主实例弹出设置窗口（菜单栏优先形态的兜底入口）。
+        case showUI          = "show_ui"
     }
     let kind: Kind
     let source: String
@@ -69,6 +71,7 @@ final class EventListener: @unchecked Sendable {
     /// 事件 → 等待列表维护（纯状态机，self-test 直接测）：
     /// waiting_approval / agent_needs_input 按 session 去重更新；agent_done 移除该 session。
     func track(_ event: AgentEvent) {
+        guard event.kind != .showUI else { return }   // UI 唤起信号，不进等待列表
         pending.withLock { list in
             list.removeAll { $0.session == event.session }
             if event.kind != .agentDone {
@@ -159,6 +162,7 @@ enum AgentNotifier {
         case .waitingApproval: return ("Claude 在等你批准\(where_)", event.message)
         case .agentNeedsInput: return ("Claude 需要你输入\(where_)", event.message)
         case .agentDone:       return ("任务完成\(where_)", event.message)
+        case .showUI:          return ("MiRemote", "打开设置窗口")
         }
     }
 
@@ -166,6 +170,7 @@ enum AgentNotifier {
     /// NSInternalInconsistencyException（Swift 不可捕获），因此严格按打包态分流：
     /// .app → 系统通知 + 提示音；裸二进制 → NSSound 提示音 + 日志。
     static func notify(_ event: AgentEvent, log: ((String) -> Void)? = nil) {
+        guard event.kind != .showUI else { return }   // 由 GUI 层消费，不发通知
         let (title, body) = describe(event)
         log?("Agent 事件：\(title)\(body.isEmpty ? "" : " — \(body)")")
         playSound(for: event.kind)

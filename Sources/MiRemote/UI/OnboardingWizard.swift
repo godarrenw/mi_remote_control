@@ -209,7 +209,7 @@ struct OnboardingWizard: View {
                     }
                 }
                 Text("重启音频服务会弹管理员密码框（执行 killall coreaudiod，让系统重新加载声卡驱动）。")
-                    .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                    .font(.footnote).foregroundStyle(.tertiary)
             } else {
                 Label("已安装，可继续下一步", systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)

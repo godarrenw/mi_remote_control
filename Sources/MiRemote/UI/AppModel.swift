@@ -31,6 +31,8 @@ enum Prefs {
     static let feedbackSound  = "com.miremote.pref.feedbackSound"
     static let seizeDevice    = "com.miremote.pref.seizeDevice"
     static let exitConfirm    = "com.miremote.pref.exitConfirm"
+    static let showHintBar    = "com.miremote.pref.showHintBar"
+    static let statusItemCompact = "com.miremote.pref.statusItemCompact"
     static let onboardingDone = "com.miremote.pref.hasCompletedOnboarding"
     /// 首次关窗「转后台不退出」说明是否已确认不再提示（N-10/25/27）
     static let closeNoticeAcknowledged = "com.miremote.pref.closeNoticeAcknowledged"
@@ -46,6 +48,8 @@ enum Prefs {
             feedbackSound: false,
             seizeDevice: true,
             exitConfirm: true,
+            showHintBar: true,
+            statusItemCompact: false,
             onboardingDone: false,
             closeNoticeAcknowledged: false,
             lastAxGranted: false,
@@ -158,6 +162,7 @@ enum ActionSummary {
         ("system_menu", "系统功能菜单浮层"),
         ("tutorial", "按键教程浮层"),
         ("app_wheel", "App 轮盘（最近使用）"),
+        ("open_settings", "打开 MiRemote 设置"),
     ]
     static func overlayDisplay(_ v: String) -> String {
         overlayNames.first(where: { $0.value == v })?.display ?? "浮层 · \(v)"
@@ -227,6 +232,8 @@ final class AppModel: ObservableObject {
     @Published var mouseModeActive = false
     @Published var degraded = false          // tap 失效等故障态
     @Published var levelBars: [Float] = Array(repeating: 0, count: 12)
+    /// 暂停遥控（镜像 services.isRemoteSuspended，供菜单栏面板响应式显示）
+    @Published var remoteSuspended = false
     /// 最近一次按下的遥控键（「按下即亮」回显），nil=无
     @Published var lastPressedKey: RemoteKey?
     /// inline「已保存」微提示（自增触发）
@@ -239,6 +246,8 @@ final class AppModel: ObservableObject {
     @Published var feedbackSound: Bool { didSet { prefsChanged() } }
     @Published var seizeDevice: Bool { didSet { prefsChanged() } }
     @Published var exitConfirm: Bool { didSet { prefsChanged() } }
+    @Published var showHintBar: Bool { didSet { prefsChanged() } }
+    @Published var statusItemCompact: Bool { didSet { prefsChanged() } }
     @Published var hasCompletedOnboarding: Bool { didSet { prefsChanged() } }
 
     // 依赖
@@ -266,6 +275,8 @@ final class AppModel: ObservableObject {
         self.feedbackSound = d.bool(forKey: Prefs.feedbackSound)
         self.seizeDevice = d.bool(forKey: Prefs.seizeDevice)
         self.exitConfirm = d.bool(forKey: Prefs.exitConfirm)
+        self.showHintBar = d.object(forKey: Prefs.showHintBar) == nil ? true : d.bool(forKey: Prefs.showHintBar)
+        self.statusItemCompact = d.bool(forKey: Prefs.statusItemCompact)
         self.hasCompletedOnboarding = d.bool(forKey: Prefs.onboardingDone)
         if let loaded = ConfigStore.load(from: configURL) {
             let migrated = migrateConfigIfNeeded(loaded)
@@ -295,6 +306,8 @@ final class AppModel: ObservableObject {
         d.set(feedbackSound, forKey: Prefs.feedbackSound)
         d.set(seizeDevice, forKey: Prefs.seizeDevice)
         d.set(exitConfirm, forKey: Prefs.exitConfirm)
+        d.set(showHintBar, forKey: Prefs.showHintBar)
+        d.set(statusItemCompact, forKey: Prefs.statusItemCompact)
         d.set(hasCompletedOnboarding, forKey: Prefs.onboardingDone)
         applyVoiceMode()
     }
@@ -429,6 +442,17 @@ final class AppModel: ObservableObject {
     /// 层 2 角标/浮层展示用的前台 App 名（引擎未跑时为 nil）。
     var frontAppNameForBadge: String? {
         services?.keyMapper?.lastExternalApplication?.localizedName
+    }
+
+    /// 暂停/恢复遥控（引擎侧幂等）；读回真实状态防止 UI 与引擎漂移。
+    func setRemoteSuspended(_ on: Bool) {
+        services?.setRemoteSuspended(on)
+        remoteSuspended = services?.isRemoteSuspended ?? on
+    }
+
+    /// 面板出现时同步一次真实暂停态。
+    func syncRemoteSuspended() {
+        remoteSuspended = services?.isRemoteSuspended ?? false
     }
 
     func runHealthRepair() -> String {

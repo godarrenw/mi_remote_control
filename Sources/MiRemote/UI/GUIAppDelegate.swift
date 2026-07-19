@@ -22,6 +22,9 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
         configureMainMenu()
+        // 菜单栏优先形态：常驻 .accessory，不占 Dock 与 Cmd+Tab（有意为之）。
+        // 入口：菜单栏图标 / 再次打开 .app（单实例 show_ui 信号）/ 遥控功能菜单「打开 MiRemote 设置」。
+        NSApp.setActivationPolicy(.accessory)
 
         var opts = AppServices.Options()
         opts.keys = true
@@ -36,6 +39,7 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // M5 v2 浮层体系：窗口选择器 / 系统功能菜单 / 教程浮层（捕获式）+ 控制模式 HUD。
         let center = OverlayCenter(model: model, services: services)
         overlayCenter = center
+        center.onOpenSettings = { [weak self] in self?.showWindow() }
         ActionRunner.onOverlay = { name in
             // ActionRunner 已切主线程投递
             MainActor.assumeIsolated { center.open(name) }
@@ -130,7 +134,6 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: 窗口双形态
 
     private func showWindow() {
-        NSApp.setActivationPolicy(.regular)
         if window == nil {
             let root = RootView().environmentObject(model!)
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 620),
@@ -152,10 +155,10 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let d = UserDefaults.standard
         if !d.bool(forKey: Prefs.closeNoticeAcknowledged) {
             let alert = NSAlert()
-            alert.messageText = "MiRemote 转入后台，继续工作"
+            alert.messageText = "MiRemote 常驻菜单栏，继续工作"
             alert.informativeText = """
-            关闭窗口不会退出：MiRemote 会留在后台继续控制遥控器，Dock 图标随之隐藏。
-            · 想再打开设置：点菜单栏遥控器图标，或从启动台 / Spotlight 打开 MiRemote。
+            关闭窗口不会退出：MiRemote 常驻菜单栏（不占 Dock 与 Cmd+Tab），继续控制遥控器。
+            · 想再打开设置：点菜单栏遥控器图标，或再次打开 MiRemote 应用。
             · 想真正退出：菜单栏图标 →「退出 MiRemote」（退出时自动恢复真实键盘）。
             · 卸载前请务必先退出，否则按键中转可能残留、影响真实键盘。
             """
@@ -171,10 +174,7 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // 关窗不退出：转后台 accessory，隐藏 Dock 图标；服务照跑。
-        DispatchQueue.main.async {
-            NSApp.setActivationPolicy(.accessory)
-        }
+        // 关窗不退出：常驻 .accessory（启动即设，无需切换），服务照跑。
     }
 
     // MARK: 服务事件接线
@@ -197,6 +197,18 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         services.health.onChange = { [weak self] state in
             DispatchQueue.main.async {
                 self?.model.degraded = state != .healthy
+            }
+        }
+        // show_ui 事件（第二实例经 events.sock 请求弹设置窗口）：start() 里会重设 onEvent，
+        // 延后一拍再包一层，拦截 show_ui、其余事件照旧走通知。
+        DispatchQueue.main.async { [weak self] in
+            let previous = services.eventListener.onEvent
+            services.eventListener.onEvent = { [weak self] event in
+                if event.kind == .showUI {
+                    DispatchQueue.main.async { self?.showWindow() }
+                    return
+                }
+                previous?(event)
             }
         }
         // keys 链路的钩子要等 start() 建好 keyMapper 才能挂——start 是同步的，这里延后一拍挂。

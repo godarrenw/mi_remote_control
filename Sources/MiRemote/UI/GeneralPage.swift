@@ -7,7 +7,6 @@ struct GeneralPage: View {
     var onShowHealthCheck: () -> Void
 
     @State private var loginItemOn = false
-    @State private var confirmHideStatusItem = false
 
     var body: some View {
         ScrollView {
@@ -25,22 +24,27 @@ struct GeneralPage: View {
                     }
                     RowDivider()
                     SettingsRow(icon: "menubar.rectangle", title: "显示菜单栏图标",
-                                subtitle: "关闭后仅通过屏幕角标反馈状态") {
-                        Toggle("", isOn: Binding(
-                            get: { model.showStatusItem },
-                            set: { new in
-                                if !new {
-                                    confirmHideStatusItem = true   // 二次确认（ux-flows 附录 23）
-                                } else {
-                                    model.showStatusItem = true
-                                }
-                            }))
+                                subtitle: "关闭或被拖出菜单栏后，双击应用图标或用遥控功能菜单「打开 MiRemote 设置」进入") {
+                        Toggle("", isOn: $model.showStatusItem)
                             .toggleStyle(.switch)
                             .labelsHidden()
                     }
                     RowDivider()
+                    SettingsRow(icon: "circle.grid.2x1", title: "菜单栏精简模式",
+                                subtitle: "仅显示图标，不显示模式角标文字") {
+                        Toggle("", isOn: $model.statusItemCompact)
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                            .disabled(!model.showStatusItem)
+                    }
+                    RowDivider()
                     SettingsRow(icon: "speaker.wave.2", title: "功能模式切换提示音", subtitle: "进入或退出第二功能时播放提示") {
                         Toggle("", isOn: $model.feedbackSound).toggleStyle(.switch).labelsHidden()
+                    }
+                    RowDivider()
+                    SettingsRow(icon: "rectangle.bottomthird.inset.filled", title: "按键提示条",
+                                subtitle: "模式或浮层激活时，屏幕底部实时显示每个键的当前作用") {
+                        Toggle("", isOn: $model.showHintBar).toggleStyle(.switch).labelsHidden()
                     }
                     RowDivider()
                     SettingsRow(icon: "lock.shield", title: "独占按键（Seize）",
@@ -66,8 +70,8 @@ struct GeneralPage: View {
                     }
                 }
 
-                DisclosureGroup {
-                    SettingsGroup(title: "触发阈值") {
+                SettingsGroup(title: "高级") {
+                    DisclosureGroup {
                         VStack(spacing: 8) {
                             HStack {
                                 Text("长按阈值").font(.body)
@@ -99,11 +103,13 @@ struct GeneralPage: View {
                                 .font(.footnote).foregroundStyle(.tertiary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(Spacing.cardPadding)
+                        .padding(.top, 8)
+                    } label: {
+                        Label("触发阈值", systemImage: "slider.horizontal.3")
+                            .font(.body)
                     }
-                    .padding(.top, 6)
-                } label: {
-                    Text("高级设置").font(.body)
+                    .padding(.horizontal, Spacing.rowH)
+                    .padding(.vertical, Spacing.rowV)
                 }
 
                 SettingsGroup(title: "关于") {
@@ -154,10 +160,5 @@ struct GeneralPage: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { loginItemOn = model.loginItems.isEnabled }
-        .confirmationDialog("关闭菜单栏图标后，只能从启动台/Spotlight 重新打开设置窗口。确定关闭？",
-                            isPresented: $confirmHideStatusItem, titleVisibility: .visible) {
-            Button("仍要关闭", role: .destructive) { model.showStatusItem = false }
-            Button("保留图标", role: .cancel) {}
-        }
     }
 }

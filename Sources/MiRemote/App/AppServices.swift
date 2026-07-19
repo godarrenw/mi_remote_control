@@ -597,6 +597,12 @@ final class AppServices {
             health.reinstallMapping = { [weak tap] in
                 tap?.reinstallMapping(reason: "周期健康检查发现映射缺失")
             }
+            // 暂停遥控：引擎是唯一事实源，联动 TapEngine（卸/装 hidutil 映射）
+            // 与 HealthMonitor（暂停位让健康判定/自动重装豁免）。
+            km.engine.onSuspendChanged = { [weak tap, weak health] suspended in
+                health?.setSuspended(suspended)
+                tap?.setSuspended(suspended)
+            }
             // 映射生命周期：蓝牙重连后设备服务重建，hidutil 映射可能失效 → 幂等重装；
             // 设备移除 / 系统睡眠可能丢 keyUp → 复位引擎与 tap 的按压状态。
             hid.onDeviceMatched = { tap.reinstallMapping(reason: "设备重连") }
@@ -647,6 +653,14 @@ final class AppServices {
     }
 
     /// 体检「重建通道」：重装 hidutil 映射（TapEngine 内部含 tap 健康自愈）。
+    /// 暂停/恢复遥控（UI 菜单栏面板的暂停 toggle 入口）。幂等。
+    func setRemoteSuspended(_ suspended: Bool) {
+        keyMapper?.engine.setSuspended(suspended)
+    }
+
+    /// 只读：遥控是否处于暂停态（按键服务未启动时视为未暂停）。
+    var isRemoteSuspended: Bool { keyMapper?.engine.isSuspended ?? false }
+
     func reinstallMapping() {
         tapEngine?.reinstallMapping(reason: "体检修复")
     }

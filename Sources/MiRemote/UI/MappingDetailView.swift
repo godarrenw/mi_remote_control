@@ -50,7 +50,7 @@ struct MappingDetailView: View {
                 appIcon
                 VStack(alignment: .leading, spacing: 2) {
                     Text(appName ?? (profile == "global" ? "全局默认" : profileDisplayName(profile)))
-                        .font(.system(size: isQuickLook ? 20 : 18, weight: .bold))
+                        .font(isQuickLook ? .title.bold() : .title2.bold())
                     Text(profile == "global" ? "所有 App 的基础映射" : "当前实际生效映射 · 未覆盖项继承全局")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -86,8 +86,8 @@ struct MappingDetailView: View {
                 }
             }
             .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.card))
+            .overlay(RoundedRectangle(cornerRadius: Radius.card)
                 .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
 
             if isQuickLook {
@@ -95,7 +95,7 @@ struct MappingDetailView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
-        .padding(18)
+        .padding(Spacing.sheetPadding)
         .frame(minWidth: 760, minHeight: isQuickLook ? 500 : 480)
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -110,15 +110,15 @@ struct MappingDetailView: View {
         let overlay = profile == "global" ? nil : config.profiles[profile]?[key.rawValue]
         return HStack(alignment: .top, spacing: 0) {
             HStack(spacing: 7) {
-                Text(KeyDisplay.badge(key)).font(.system(size: 10, weight: .bold))
+                Text(KeyDisplay.badge(key)).font(.caption2.weight(.bold))
                     .frame(width: 27, height: 24)
                     .background(Color.accentColor.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.small))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(KeyDisplay.name(key)).font(.caption)
                     if profile != "global" {
                         Text(overlay == nil ? "全部继承" : "含 App 覆盖")
-                            .font(.system(size: 9)).foregroundStyle(overlay == nil ? .secondary : Color.accentColor)
+                            .font(.caption2).foregroundStyle(overlay == nil ? .secondary : Color.accentColor)
                     }
                 }
             }
@@ -152,7 +152,7 @@ struct MappingDetailView: View {
     @ViewBuilder private func sourceLabel(overridden: Bool) -> some View {
         if profile != "global" {
             Text(overridden ? "App 覆盖" : "继承全局")
-                .font(.system(size: 9, weight: overridden ? .medium : .regular))
+                .font(.caption2.weight(overridden ? .medium : .regular))
                 .foregroundStyle(overridden ? Color.accentColor : .secondary)
         }
     }

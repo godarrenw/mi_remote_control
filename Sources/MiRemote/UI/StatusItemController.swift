@@ -2,12 +2,18 @@ import AppKit
 import SwiftUI
 import Combine
 
-// MARK: - 菜单栏图标（6 态语义，ux-flows §2.2）
+// MARK: - 菜单栏图标（菜单栏优先形态的主入口）
+//
+// 左键点击 = SwiftUI 状态面板（NSPopover）；右键 / Option+左键 = 传统 NSMenu 兜底。
+// 图标为模板图（单色随系统着色），6 态用着色/透明度/角标短名表达而不换整图；
+// autosaveName 固定，用户 Cmd+拖走后 isVisible 持久为 false——此时零打扰
+// （双击 .app 与遥控功能菜单「打开 MiRemote 设置」是天然兜底），通用页开关可恢复。
 
 @MainActor
-final class StatusItemController: NSObject {
+final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private var statusItem: NSStatusItem?
+    private var popover: NSPopover?
     private let model: AppModel
     private var cancellables: Set<AnyCancellable> = []
 
@@ -28,6 +34,12 @@ final class StatusItemController: NSObject {
         refresh()
     }
 
+    /// 图标当前是否可见（用户可能 Cmd+拖走；autosave 持久，供通用页开关状态同步/恢复）。
+    var itemVisible: Bool {
+        get { statusItem?.isVisible ?? false }
+        set { statusItem?.isVisible = newValue }
+    }
+
     private func refresh() {
         if !model.showStatusItem {
             if let item = statusItem {
@@ -38,29 +50,47 @@ final class StatusItemController: NSObject {
         }
         if statusItem == nil {
             // variableLength：层激活时图标旁要放语义短名
-            statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            item.autosaveName = "com.miremote.statusitem"
+            item.behavior = .removalAllowed
+            if let button = item.button {
+                button.target = self
+                button.action = #selector(statusItemClicked(_:))
+                button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            }
+            statusItem = item
         }
         guard let button = statusItem?.button else { return }
-        let (symbol, tint, desc) = iconState()
-        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: desc)
-        img?.isTemplate = tint == nil
+        let (tint, dimmed, desc) = iconState()
+        // 模板底图恒为遥控器轮廓，状态用着色/透明度表达（失联=降透明度）
+        var img = NSImage(systemSymbolName: "av.remote", accessibilityDescription: desc)
+        if dimmed, let base = img {
+            let faded = NSImage(size: base.size, flipped: false) { rect in
+                base.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 0.35)
+                return true
+            }
+            faded.isTemplate = true
+            img = faded
+        } else {
+            img?.isTemplate = tint == nil
+        }
         button.image = img
         button.contentTintColor = tint
-        // 层激活时叠加语义短名（P3：显示名字而非数字）；tooltip 给全名
-        button.title = model.activeLayer != 0 ? " \(layerShortText(model.activeLayer))" : ""
+        // 层激活时叠加语义短名（P3：显示名字而非数字）；精简模式仅图标
+        button.title = (!model.statusItemCompact && model.activeLayer != 0)
+            ? " \(layerShortText(model.activeLayer))" : ""
         button.toolTip = tooltipText()
         button.imagePosition = .imageLeading
-        statusItem?.menu = buildMenu()
     }
 
-    /// 6 态：故障红 > 语音 > 鼠标 > 层 > 未连接 > 空闲
-    private func iconState() -> (symbol: String, tint: NSColor?, desc: String) {
-        if model.degraded { return ("exclamationmark.triangle.fill", .systemRed, "故障") }
-        if model.voiceActive { return ("mic.fill", .controlAccentColor, "语音中") }
-        if model.mouseModeActive { return ("cursorarrow", .systemGreen, "鼠标模式") }
-        if model.activeLayer != 0 { return ("switch.2", .controlAccentColor, modeDisplayName(model.activeLayer)) }
-        if !model.connected { return ("av.remote", nil, "未连接") }
-        return ("av.remote.fill", nil, "已连接")
+    /// 6 态：故障红 > 语音 > 鼠标 > 层 > 未连接（降透明度）> 空闲
+    private func iconState() -> (tint: NSColor?, dimmed: Bool, desc: String) {
+        if model.degraded { return (.systemRed, false, "故障") }
+        if model.voiceActive { return (.controlAccentColor, false, "语音中") }
+        if model.mouseModeActive { return (.systemGreen, false, "鼠标模式") }
+        if model.activeLayer != 0 { return (.controlAccentColor, false, modeDisplayName(model.activeLayer)) }
+        if !model.connected { return (nil, true, "未连接") }
+        return (nil, false, "已连接")
     }
 
     /// tooltip 与浮动角标同步的完整语义描述（P3/P9）。
@@ -76,46 +106,62 @@ final class StatusItemController: NSObject {
         return parts.joined(separator: " · ")
     }
 
+    // MARK: 点击路由：左键=状态面板，右键/Option=传统菜单兜底
+
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        let isRight = event?.type == .rightMouseUp
+            || event?.modifierFlags.contains(.option) == true
+        if isRight {
+            showFallbackMenu()
+        } else {
+            togglePanel()
+        }
+    }
+
+    func togglePanel() {
+        if let popover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        guard let button = statusItem?.button else { return }
+        let p = NSPopover()
+        p.behavior = .transient
+        p.delegate = self
+        p.contentViewController = NSHostingController(
+            rootView: StatusPanelView(
+                onOpenWindow: { [weak self] in
+                    self?.popover?.performClose(nil)
+                    self?.onOpenWindow?()
+                },
+                onHealthCheck: { [weak self] in
+                    self?.popover?.performClose(nil)
+                    self?.onOpenWindow?()
+                    NotificationCenter.default.post(name: .miremoteShowHealthCheck, object: nil)
+                },
+                onQuit: { [weak self] in self?.onQuit?() })
+                .environmentObject(model))
+        popover = p
+        p.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    nonisolated func popoverDidClose(_ notification: Notification) {
+        Task { @MainActor in self.popover = nil }
+    }
+
+    /// 传统 NSMenu 兜底（statusItem.menu 常态必须为 nil，否则会吞掉左键面板）。
+    private func showFallbackMenu() {
+        guard let item = statusItem else { return }
+        item.menu = buildMenu()
+        item.button?.performClick(nil)
+        item.menu = nil
+    }
+
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
-
-        // 状态行（不可点）
-        let statusText: String
-        if model.connected {
-            var parts = ["\(model.deviceName ?? "MI RC 2 Pro") · 已连接"]
-            if let pct = model.batteryPercent {
-                parts.append("电量 \(pct)%")
-            } else {
-                parts.append("电量读取中")
-            }
-            if model.activeLayer != 0 { parts.append(modeDisplayName(model.activeLayer)) }
-            statusText = parts.joined(separator: " · ")
-        } else {
-            statusText = "遥控器未连接"
-        }
-        let statusRow = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
-        statusRow.isEnabled = false
-        menu.addItem(statusRow)
-
         let open = NSMenuItem(title: "打开设置窗口", action: #selector(openWindow), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
-        menu.addItem(.separator())
-
-        // 快捷开关：语音模式
-        let voiceMenu = NSMenu()
-        for (mode, name) in [(VoiceMode.remoteMic, "遥控器麦克风"), (.macMic, "Mac 内置麦克风"), (.off, "关闭")] {
-            let item = NSMenuItem(title: name, action: #selector(switchVoiceMode(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = mode.rawValue
-            item.state = model.voiceMode == mode ? .on : .off
-            voiceMenu.addItem(item)
-        }
-        let voiceRoot = NSMenuItem(title: "语音模式", action: nil, keyEquivalent: "")
-        menu.addItem(voiceRoot)
-        menu.setSubmenu(voiceMenu, for: voiceRoot)
-
-        menu.addItem(.separator())
         let health = NSMenuItem(title: "一键体检与修复…", action: #selector(showHealth), keyEquivalent: "")
         health.target = self
         menu.addItem(health)
@@ -132,10 +178,120 @@ final class StatusItemController: NSObject {
         onOpenWindow?()
         NotificationCenter.default.post(name: .miremoteShowHealthCheck, object: nil)
     }
-    @objc private func switchVoiceMode(_ sender: NSMenuItem) {
-        if let raw = sender.representedObject as? String, let mode = VoiceMode(rawValue: raw) {
-            model.voiceMode = mode
+}
+
+// MARK: - 菜单栏状态面板（SwiftUI，NSPopover 内容）
+
+struct StatusPanelView: View {
+    @EnvironmentObject var model: AppModel
+    var onOpenWindow: () -> Void
+    var onHealthCheck: () -> Void
+    var onQuit: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.intra) {
+            statusCard
+            Divider()
+            Toggle(isOn: Binding(
+                get: { model.remoteSuspended },
+                set: { model.setRemoteSuspended($0) })) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("暂停遥控").font(.body)
+                    Text("按键与手势暂不生效，真实键盘不受影响")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("语音输入").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $model.voiceMode) {
+                    Text("遥控器麦克风").tag(VoiceMode.remoteMic)
+                    Text("Mac 麦克风").tag(VoiceMode.macMic)
+                    Text("关闭").tag(VoiceMode.off)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            Divider()
+            HStack(spacing: Spacing.intra) {
+                Button("打开设置", action: onOpenWindow)
+                Button("一键体检", action: onHealthCheck)
+                Spacer()
+                Button(role: .destructive, action: onQuit) {
+                    Image(systemName: "power")
+                }
+                .help("退出 MiRemote（恢复真实键盘）")
+            }
+            .controlSize(.small)
         }
+        .padding(Spacing.rowH)
+        .frame(width: 300)
+        .onAppear { model.syncRemoteSuspended() }
+    }
+
+    // 顶部状态卡：设备名 + 连接/模式行 + 电量环 + 健康点
+    private var statusCard: some View {
+        HStack(spacing: Spacing.intra) {
+            ZStack {
+                RoundedRectangle(cornerRadius: Radius.badge)
+                    .fill(LinearGradient(colors: [Color(white: 0.28), Color(white: 0.12)],
+                                         startPoint: .top, endPoint: .bottom))
+                Image(systemName: "av.remote")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.deviceName ?? "MI RC 2 Pro").font(.body.weight(.semibold))
+                Text(statusLine).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let pct = model.batteryPercent {
+                BatteryRingView(percent: pct)
+            }
+            Circle()
+                .fill(model.degraded ? Color.red : (model.connected ? Color.green : Color.secondary.opacity(0.4)))
+                .frame(width: 8, height: 8)
+                .help(model.degraded ? "按键通道异常" : (model.connected ? "运行正常" : "未连接"))
+        }
+    }
+
+    private var statusLine: String {
+        if !model.connected { return "未连接 · 长按 主页+返回 配对" }
+        if model.remoteSuspended { return "已连接 · 已暂停遥控" }
+        var parts = ["已连接"]
+        if model.activeLayer != 0 {
+            parts.append(layerBadgeText(model.activeLayer, frontAppName: model.frontAppNameForBadge))
+        } else if model.mouseModeActive {
+            parts.append("鼠标模式")
+        } else if model.voiceActive {
+            parts.append("录音中")
+        } else {
+            parts.append("空闲")
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// 小电量环：accent 弧线 + 百分比数字，低电量转红。
+struct BatteryRingView: View {
+    let percent: Int
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: CGFloat(max(0, min(100, percent))) / 100)
+                .stroke(percent <= 15 ? Color.red : Color.accentColor,
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Text("\(percent)")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+        }
+        .frame(width: 28, height: 28)
+        .help("电量 \(percent)%")
     }
 }
 
@@ -146,6 +302,9 @@ final class FloatingBadgeController {
     private var panel: NSPanel?
     private let model: AppModel
     private var cancellables: Set<AnyCancellable> = []
+    /// 场景切换闪现（gamepad-ux C2：前台 App 变化致 per-app 覆盖生效时提示「XX 布局」）
+    private var flashUntil: Date?
+    private var lastProfileBundle: String?
 
     init(model: AppModel) {
         self.model = model
@@ -153,11 +312,40 @@ final class FloatingBadgeController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.refresh() }
             .store(in: &cancellables)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            Task { @MainActor in self?.noteFrontApp(app) }
+        }
+    }
+
+    /// 前台 App 变化：切进有专用场景的 App 时闪现「<App名> 布局」1.2s（复用本角标，不新造浮窗）。
+    private func noteFrontApp(_ app: NSRunningApplication?) {
+        guard let app, let bundleID = app.bundleIdentifier,
+              bundleID != Bundle.main.bundleIdentifier else { return }
+        let hasOverlay = model.config.profiles[bundleID] != nil
+        defer { lastProfileBundle = hasOverlay ? bundleID : nil }
+        guard hasOverlay, bundleID != lastProfileBundle else { return }
+        flash(text: "\(app.localizedName ?? bundleID) 布局")
+    }
+
+    private func flash(text: String, duration: TimeInterval = 1.2) {
+        flashUntil = Date().addingTimeInterval(duration)
+        show(text: text)
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            guard let self, let until = self.flashUntil, Date() >= until else { return }
+            self.flashUntil = nil
+            self.refresh()
+        }
     }
 
     /// 模式态（层/鼠标/语音）常驻显示语义名（P3/P9：屏幕角落胶囊是模式可见性的主渠道，
     /// 不再只做菜单栏图标关闭后的兜底——20px 小图标瞟一眼分不清在哪个模式）。
     private func refresh() {
+        // 闪现期间不被常规状态刷新覆盖
+        if let until = flashUntil, Date() < until { return }
         var texts: [String] = []
         if model.activeLayer != 0 {
             texts.append(layerBadgeText(model.activeLayer, frontAppName: model.frontAppNameForBadge))
@@ -174,7 +362,7 @@ final class FloatingBadgeController {
     private func show(text: String) {
         let content = NSHostingView(rootView:
             Text(text)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)

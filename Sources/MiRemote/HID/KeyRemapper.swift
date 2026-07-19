@@ -247,6 +247,8 @@ final class TapEngine: @unchecked Sendable {
         var okDown = false
         /// hidutil 映射当前是否已安装（失效安全的恢复判据）。
         var mappingInstalled = false
+        /// 暂停遥控位：true 期间映射保持卸载，健康检查/重装一律豁免。
+        var suspended = false
     }
     private let stateLock = OSAllocatedUnfairLock(initialState: PressState())
 
@@ -298,11 +300,50 @@ final class TapEngine: @unchecked Sendable {
         stateLock.withLock { $0 = PressState() }
     }
 
+    /// 「tap 恢复后是否允许自动重装映射」的纯判据（healthCheck 用，self-test 直接测）：
+    /// 暂停期间一律不装；tap 不在或映射已在位也不装。
+    static func shouldAutoReinstall(suspended: Bool, tapEnabled: Bool, mappingInstalled: Bool) -> Bool {
+        !suspended && tapEnabled && !mappingInstalled
+    }
+
+    /// 暂停/恢复遥控（MappingEngine.onSuspendChanged 接线）：
+    /// 暂停=卸载 hidutil 映射（遥控键回系统原生，方向/音量天然可用）；
+    /// 恢复=tap 在运行则幂等重装。串行在 healthQueue 上执行，与健康检查天然互斥。
+    func setSuspended(_ suspended: Bool) {
+        healthQueue.async { [weak self] in
+            guard let self else { return }
+            let changed = self.stateLock.withLock { st -> Bool in
+                guard st.suspended != suspended else { return false }
+                st.suspended = suspended
+                return true
+            }
+            guard changed else { return }
+            if suspended {
+                KeyRemapper.uninstall()
+                self.stateLock.withLock { st in
+                    st.mappingInstalled = false
+                    st.nativeHeld.removeAll()
+                    st.okDown = false
+                }
+                self.delegate?.hidLog("遥控已暂停：hidutil 映射已卸载（按键回系统原生）")
+            } else if self.tap != nil {
+                let ok = KeyRemapper.install()
+                self.stateLock.withLock { $0.mappingInstalled = ok }
+                self.delegate?.hidLog(ok ? "遥控已恢复：hidutil 映射已重装"
+                                         : "遥控恢复：hidutil 映射重装失败（健康检查会重试）")
+            }
+        }
+    }
+
     /// 幂等重装 hidutil 映射（蓝牙重连 / 系统唤醒后调用：设备服务重建后映射可能失效）。
-    /// tap 未运行时不做事（避免制造「映射在、过滤器不在」泄漏态）。
+    /// tap 未运行时不做事（避免制造「映射在、过滤器不在」泄漏态）；暂停期间豁免。
     func reinstallMapping(reason: String) {
         healthQueue.async { [weak self] in
             guard let self, self.tap != nil else { return }
+            if self.stateLock.withLock({ $0.suspended }) {
+                self.delegate?.hidLog("遥控已暂停，跳过映射重装（\(reason)）")
+                return
+            }
             let ok = KeyRemapper.install()
             self.stateLock.withLock { $0.mappingInstalled = ok }
             self.delegate?.hidLog(ok ? "hidutil 映射已重装（\(reason)）"
@@ -330,10 +371,14 @@ final class TapEngine: @unchecked Sendable {
 
     private func healthCheck() {
         guard let tap else { return }
-        let installed = stateLock.withLock { $0.mappingInstalled }
+        let (installed, suspended) = stateLock.withLock { ($0.mappingInstalled, $0.suspended) }
+        // 暂停期间映射被有意卸载——不是故障，健康检查不做任何自动重装/恢复动作。
+        if suspended { return }
         if CGEvent.tapIsEnabled(tap: tap) {
             // tap 健康。若此前因失效卸载过映射，恢复后自动重装。
-            if !installed, KeyRemapper.install() {
+            if Self.shouldAutoReinstall(suspended: suspended, tapEnabled: true,
+                                        mappingInstalled: installed),
+               KeyRemapper.install() {
                 stateLock.withLock { $0.mappingInstalled = true }
                 delegate?.hidLog("健康检查：TAP 已恢复，hidutil 映射已重装")
             }

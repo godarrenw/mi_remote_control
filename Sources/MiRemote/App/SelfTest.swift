@@ -500,6 +500,31 @@ enum SelfTest {
         // 加固-3. resetInputState：清瞬时层/OK 物理态/在途定时器（设备移除/睡眠/tap 失效恢复路径）
         expect(MappingEngine.resetSelfCheck(), "MappingEngine resetInputState 自测")
         expect(MappingEngine.escapeHatchSelfCheck(), "全局逃生键（长按菜单 1.5s）自测")
+        expect(MappingEngine.suspendSelfCheck(), "暂停遥控 suspend/resume 状态机自测")
+
+        // 暂停遥控：健康判定与自动重装豁免（纯逻辑）。
+        do {
+            var s = HealthSources()
+            s.keysEnabled = true
+            s.bleConnected = true
+            s.tapAlive = false          // 暂停期间 tap/映射不按故障判定
+            s.mappingInstalled = false
+            s.suspended = true
+            if case .degraded(let why) = HealthMonitor.computeOverall(s) {
+                expect(why.count == 1 && why[0].contains("暂停"), "健康态：暂停 → 仅提示不算故障", "\(why)")
+            } else {
+                expect(false, "健康态：暂停应为 degraded 提示", HealthMonitor.describe(HealthMonitor.computeOverall(s)))
+            }
+            s.suspended = false
+            if case .broken = HealthMonitor.computeOverall(s) {} else {
+                expect(false, "健康态：恢复后 tap 失效重新按故障判定")
+            }
+            expect(!TapEngine.shouldAutoReinstall(suspended: true, tapEnabled: true, mappingInstalled: false)
+                   && TapEngine.shouldAutoReinstall(suspended: false, tapEnabled: true, mappingInstalled: false)
+                   && !TapEngine.shouldAutoReinstall(suspended: false, tapEnabled: true, mappingInstalled: true)
+                   && !TapEngine.shouldAutoReinstall(suspended: false, tapEnabled: false, mappingInstalled: false),
+                   "TapEngine 自动重装判据：暂停/在位/无 tap 一律豁免")
+        }
 
         // M6-1. EnvironmentCheck API 健全性：只断言可调用不崩、返回结构完整，
         //       不断言具体授权状态（取决于运行环境）。

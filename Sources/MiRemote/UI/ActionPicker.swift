@@ -60,7 +60,7 @@ struct ShortcutRecorderSheet: View {
 
             if let cap = captured {
                 Text(ActionSummary.keyStrokeSummary(key: cap.key, mods: cap.mods))
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.title.weight(.semibold))
                     .padding(.vertical, 6)
                 if let warn = shortcutWarning(key: cap.key, mods: cap.mods) {
                     Text(warn).font(.caption).foregroundStyle(.yellow)
@@ -81,7 +81,7 @@ struct ShortcutRecorderSheet: View {
                 }
             } else if recording {
                 Text("按下快捷键…")
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.title3.weight(.medium))
                     .foregroundStyle(Color.accentColor)
                     .padding(.vertical, 10)
                 Text("直接按下真实组合键，左右修饰键自动区分；Esc 也会被录入，取消请点右上角 ✕")
@@ -92,7 +92,7 @@ struct ShortcutRecorderSheet: View {
                     .controlSize(.large)
             }
         }
-        .padding(20)
+        .padding(Spacing.sheetPadding)
         .frame(width: 340)
         .onAppear { startMonitor() }
         .onDisappear { stopMonitor() }
@@ -220,7 +220,7 @@ struct ActionPicker: View {
                     .disabled(shellText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
-            .padding(20)
+            .padding(Spacing.sheetPadding)
         }
     }
 
@@ -260,7 +260,7 @@ struct ActionPicker: View {
                     .disabled(text.isEmpty)
                 }
             }
-            .padding(20)
+            .padding(Spacing.sheetPadding)
             .onAppear {
                 if case .macro(let steps)? = current {
                     existingSteps = steps.count

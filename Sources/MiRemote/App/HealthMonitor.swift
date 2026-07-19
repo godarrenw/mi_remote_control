@@ -25,6 +25,8 @@ struct HealthSources: Equatable {
     var accessibilityGranted = true
     /// 输入监控权限（denied 才算撤销；unknown 不降级——系统可能从未记录过请求）。
     var inputMonitoringGranted = true
+    /// 暂停遥控位：暂停期间映射被有意卸载，tap/映射两项不按故障判定、不自动重装。
+    var suspended = false
 }
 
 // MARK: - 一键体检与修复
@@ -191,11 +193,16 @@ final class HealthMonitor: @unchecked Sendable {
         if !s.accessibilityGranted {
             broken.append("辅助功能权限被撤销（按键映射与豆包触发不可用）")
         }
-        if s.keysEnabled && !s.tapAlive {
-            broken.append("按键过滤器（CGEventTap）失效（等待自动恢复）")
-        }
-        if s.keysEnabled && s.tapAlive && !s.mappingInstalled {
-            degraded.append("hidutil 中转映射不在位（中转键位暂不生效）")
+        if s.keysEnabled && s.suspended {
+            // 用户主动暂停：映射有意卸载，不算故障，仅提示。
+            degraded.append("遥控已暂停（按键映射临时停用，恢复开关在菜单栏面板）")
+        } else {
+            if s.keysEnabled && !s.tapAlive {
+                broken.append("按键过滤器（CGEventTap）失效（等待自动恢复）")
+            }
+            if s.keysEnabled && s.tapAlive && !s.mappingInstalled {
+                degraded.append("hidutil 中转映射不在位（中转键位暂不生效）")
+            }
         }
         if !s.bleConnected {
             degraded.append("遥控器蓝牙未连接（语音不可用，自动重连中）")
@@ -234,6 +241,7 @@ final class HealthMonitor: @unchecked Sendable {
     func setBLEConnected(_ v: Bool)     { update { $0.bleConnected = v } }
     func setTapAlive(_ v: Bool)         { update { $0.tapAlive = v; $0.mappingInstalled = v } }
     func setMappingInstalled(_ v: Bool) { update { $0.mappingInstalled = v } }
+    func setSuspended(_ v: Bool)        { update { $0.suspended = v } }
 
     /// 周期健康检查：权限（60s，被撤时日志+状态回调）+ hidutil 映射在位校验。
     /// 只读操作（hidutil --get / AXIsProcessTrusted / IOHIDCheckAccess），发现映射缺失
@@ -255,14 +263,17 @@ final class HealthMonitor: @unchecked Sendable {
         let ax = EnvironmentCheck.accessibility().state == .granted
         let im = EnvironmentCheck.inputMonitoring().state != .denied
         var mappingMissing = false
-        let (keys, tapAlive) = state.withLock { ($0.sources.keysEnabled, $0.sources.tapAlive) }
-        if keys, tapAlive, let present = KeyRemapper.mappingPresent() {
+        let (keys, tapAlive, suspended) = state.withLock {
+            ($0.sources.keysEnabled, $0.sources.tapAlive, $0.sources.suspended)
+        }
+        // 暂停期间映射被有意卸载，不查在位、不触发重装。
+        if keys, tapAlive, !suspended, let present = KeyRemapper.mappingPresent() {
             mappingMissing = !present
         }
         update { s in
             s.accessibilityGranted = ax
             s.inputMonitoringGranted = im
-            if keys, tapAlive { s.mappingInstalled = !mappingMissing }
+            if keys, tapAlive, !suspended { s.mappingInstalled = !mappingMissing }
         }
         if mappingMissing {
             log?("周期检查：hidutil 中转映射缺失，触发重装")
@@ -317,8 +328,11 @@ final class HealthMonitor: @unchecked Sendable {
                          guideURL: bh.guideURL))
 
         // hidutil 残留/在位：运行中且 tap 存活 → 映射在用，做「在位校验」（缺失触发重装）；
-        // 否则映射本不该存在 → 做「残留清理」。
-        if let rt = runtime, rt.keysEnabled, rt.tapAlive {
+        // 暂停中 → 映射有意卸载，既不是残留也不缺失，跳过；否则做「残留清理」。
+        if let rt = runtime, rt.suspended {
+            items.append(RepairItem(name: "hidutil 中转映射", status: .info,
+                                    message: "遥控已暂停，映射已有意卸载，跳过检查", guideURL: nil))
+        } else if let rt = runtime, rt.keysEnabled, rt.tapAlive {
             switch KeyRemapper.mappingPresent() {
             case true:
                 items.append(RepairItem(name: "hidutil 中转映射", status: .ok, message: "在位", guideURL: nil))

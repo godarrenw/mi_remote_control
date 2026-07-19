@@ -95,7 +95,7 @@ struct MappingPage: View {
             PageHeader(title: "按键映射",
                        subtitle: model.currentProfile == "global"
                        ? "点击左侧遥控器上的按键，编辑它的触发动作。改动即时保存并生效。"
-                       : "正在编辑 profile「\(profileDisplayName(model.currentProfile))」的覆盖绑定。")
+                       : "正在编辑场景「\(profileDisplayName(model.currentProfile))」的覆盖绑定。")
             Spacer()
             if showSaved {
                 Label("已保存", systemImage: "checkmark.circle.fill")
@@ -260,12 +260,12 @@ struct KeyLearnSheet: View {
             if let key = learned {
                 VStack(spacing: 6) {
                     Text(KeyDisplay.badge(key))
-                        .font(.system(size: 20, weight: .bold))
+                        .font(.title.bold())
                         .foregroundStyle(.white)
                         .frame(width: 44, height: 44)
                         .background(Color.accentColor)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    Text(KeyDisplay.name(key)).font(.system(size: 15, weight: .semibold))
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.card))
+                    Text(KeyDisplay.name(key)).font(.title3.weight(.semibold))
                     Text(KeyDisplay.usage(key)).font(.caption).foregroundStyle(.secondary)
                 }
                 HStack {
@@ -284,7 +284,7 @@ struct KeyLearnSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 Image(systemName: "antenna.radiowaves.left.and.right.slash")
-                    .font(.system(size: 24))
+                    .font(.title)
                     .foregroundStyle(.secondary)
                 Text("引擎未运行（预览模式或遥控器未连接），无法识别").font(.callout)
             }

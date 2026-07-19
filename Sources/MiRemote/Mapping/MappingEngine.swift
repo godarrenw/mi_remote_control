@@ -111,6 +111,36 @@ final class MappingEngine: @unchecked Sendable {
     /// 引擎自身已清捕获态与层，未接线（CLI 模式）也能自愈；接线期设置，之后只读。
     var onEscapeHatch: (() -> Void)?
 
+    // MARK: - 暂停遥控（suspend）
+
+    /// 暂停位（跨线程只读查询用锁；变更在引擎执行上下文内完成）。
+    private let suspendedLock = OSAllocatedUnfairLock(initialState: false)
+    /// 只读：遥控是否处于暂停态（UI toggle 显示用，任意线程可读）。
+    var isSuspended: Bool { suspendedLock.withLock { $0 } }
+    /// 暂停态变化钩子（引擎执行上下文回调；AppServices 接线：
+    /// true → TapEngine 卸载 hidutil 映射（遥控键回系统原生）+ 健康检查豁免重装，
+    /// false → 重装映射。接线期设置，之后只读。
+    var onSuspendChanged: ((Bool) -> Void)?
+
+    /// 暂停/恢复遥控。暂停期间所有按键事件（含 IOHID 通道的返回键）在引擎入口丢弃，
+    /// 并复位输入运行态（清层/在途定时器，防卡键卡层）；重复设置同值为幂等无副作用。
+    func setSuspended(_ suspended: Bool) {
+        dispatch { [weak self] in
+            guard let self else { return }
+            let changed = self.suspendedLock.withLock { current -> Bool in
+                guard current != suspended else { return false }
+                current = suspended
+                return true
+            }
+            guard changed else { return }
+            // 暂停即回到干净基态：锁定层一并清除（_resetInputState 只清瞬时层），
+            // 恢复后从基础层开始，不残留看不见的模式态。
+            if suspended { self.lockedLayer = 0 }
+            self._resetInputState(suspended ? "遥控暂停" : "遥控恢复")
+            self.onSuspendChanged?(suspended)
+        }
+    }
+
     // MARK: - 分流快照（tap 回调线程读，引擎 queue 写）
 
     /// okDown 竞争窗口（已消除）：ok 按下与方向键几乎同时到达时，本快照的 okDown
@@ -262,6 +292,8 @@ final class MappingEngine: @unchecked Sendable {
     }
 
     private func _handle(_ event: ButtonEvent) {
+        // 暂停态：遥控完全惰性——不进状态机、不追踪逃生、不喂浮层。
+        if suspendedLock.withLock({ $0 }) { return }
         // 全局逃生键跟踪必须在浮层捕获分支【之前】：浮层打开时事件不进状态机，
         // 但长按菜单 1.5s 的逃生兜底在任何状态（含捕获态）都要生效。
         if event.key == .menu {
@@ -1037,6 +1069,53 @@ extension MappingEngine {
         }
 
         if ok { print("[MappingEngine.escapeHatchSelfCheck] passed") }
+        return ok
+    }
+
+    /// 暂停遥控自测：suspend 清层/丢事件/钩子单发幂等，resume 恢复正常分发。
+    static func suspendSelfCheck() -> Bool {
+        var ok = true
+        func expect(_ cond: Bool, _ msg: String) {
+            if !cond { ok = false; print("[MappingEngine.suspendSelfCheck] FAIL: \(msg)") }
+        }
+        let clock = ManualClock()
+        let runner = RecordingRunner()
+        let del = RecordingDelegate()
+        let engine = MappingEngine(config: makeTestConfig(),
+                                   runner: runner,
+                                   delegate: del,
+                                   dispatch: { $0() },
+                                   scheduleAfter: { ms, work in clock.schedule(ms, work) },
+                                   mainDispatch: { $0() })
+        var hooks: [Bool] = []
+        engine.onSuspendChanged = { hooks.append($0) }
+        func down(_ k: RemoteKey) { engine.handle(ButtonEvent(key: k, isDown: true, timeNs: 0)) }
+        func up(_ k: RemoteKey)   { engine.handle(ButtonEvent(key: k, isDown: false, timeNs: 0)) }
+
+        // 1) 锁定层 2 时暂停：层回落 0、钩子收到 true。
+        down(.tv); clock.advance(100); up(.tv)              // toggle → 层2
+        expect(del.layers == [2], "1 先进层2")
+        engine.setSuspended(true)
+        expect(engine.isSuspended, "1 isSuspended=true")
+        expect(del.layers == [2, 0], "1 暂停清层回0")
+        expect(hooks == [true], "1 钩子收到 true")
+
+        // 2) 暂停期间事件全部丢弃（含在途定时器不再产生动作）。
+        down(.back); clock.advance(10); up(.back)
+        down(.menu); clock.advance(2000); up(.menu)         // 逃生跟踪也不生效
+        expect(runner.actions.isEmpty, "2 暂停期间无任何动作产出")
+
+        // 3) 重复 suspend(true) 幂等：钩子不重发、无状态副作用。
+        engine.setSuspended(true)
+        expect(hooks == [true], "3 同值设置不重发钩子")
+
+        // 4) 恢复：钩子收到 false，正常分发回来。
+        engine.setSuspended(false)
+        expect(!engine.isSuspended && hooks == [true, false], "4 恢复态与钩子")
+        down(.back); clock.advance(10); up(.back)
+        expect(runner.actions == [.keyStroke(key: "delete", mods: [])], "4 恢复后正常 tap")
+
+        if ok { print("[MappingEngine.suspendSelfCheck] passed") }
         return ok
     }
 }

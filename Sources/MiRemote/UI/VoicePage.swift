@@ -277,7 +277,7 @@ struct VoicePage: View {
                 }
                 .foregroundStyle(Color.accentColor)
                 .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: Radius.small))
             }
             HStack(spacing: 8) {
                 Image(systemName: "speaker.wave.2.fill").foregroundStyle(.tertiary)
@@ -287,8 +287,8 @@ struct VoicePage: View {
             }
         }
         .padding(12)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.badge))
+        .overlay(RoundedRectangle(cornerRadius: Radius.badge)
             .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
     }
 

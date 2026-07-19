@@ -18,14 +18,17 @@ enum Spacing {
     static let rowMinHeight: CGFloat = 38
     /// 卡片内自由布局的内边距
     static let cardPadding: CGFloat = 14
+    /// sheet / 浮层容器的内边距
+    static let sheetPadding: CGFloat = 20
 }
 
-/// 圆角体系：卡片 10 / 控件徽标 7 / 浮层 16 / HUD 12。
+/// 圆角体系：小微章 6 / 控件徽标 7 / 卡片 10 / HUD 12 / 浮层 16。
 enum Radius {
-    static let card: CGFloat = 10
+    static let small: CGFloat = 6
     static let badge: CGFloat = 7
-    static let overlay: CGFloat = 16
+    static let card: CGFloat = 10
     static let hud: CGFloat = 12
+    static let overlay: CGFloat = 16
 }
 
 /// 动效体系：浮层弹入用 spring，选中/焦点切换用 0.15s 缓动。

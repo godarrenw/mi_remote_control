@@ -8,7 +8,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .mapping: return "按键映射"
-        case .profile: return "Profile"
+        case .profile: return "场景配置"
         case .voice:   return "语音"
         case .general: return "通用"
         }
@@ -36,9 +36,15 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // 侧栏头部
                 HStack(spacing: Spacing.intra) {
-                    Image(nsImage: NSApplication.shared.applicationIconImage)
-                        .resizable().frame(width: 36, height: 36)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(LinearGradient(colors: [Color(white: 0.28), Color(white: 0.12)],
+                                                 startPoint: .top, endPoint: .bottom))
+                        Image(systemName: "av.remote")
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: 36, height: 36)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("遥控器控制台").font(.headline)
                         HStack(spacing: 4) {

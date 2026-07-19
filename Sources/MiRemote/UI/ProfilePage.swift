@@ -9,6 +9,7 @@ struct ProfilePage: View {
     @State private var showAddApp = false
     @State private var showPresets = false
     @State private var detailProfile: ProfileDetailSelection?
+    @State private var hoveredProfile: String?
 
     private var overlayProfiles: [String] {
         model.config.profiles.keys.filter { $0 != "global" }.sorted()
@@ -17,7 +18,7 @@ struct ProfilePage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.section) {
-                PageHeader(title: "Profile",
+                PageHeader(title: "场景配置",
                            subtitle: "按前台 App 自动切换按键映射。未单独配置的键继承全局默认。")
 
                 SettingsGroup(title: "全局") {
@@ -85,38 +86,46 @@ struct ProfilePage: View {
     private func profileRow(_ bundle: String) -> some View {
         let overrides = model.config.profiles[bundle] ?? [:]
         let names = overrides.keys.compactMap { RemoteKey(rawValue: $0) }.map { KeyDisplay.badge($0) }
-        HStack(spacing: 10) {
-            Button {
-                detailProfile = ProfileDetailSelection(id: bundle)
-            } label: {
-                HStack(spacing: 10) {
-                    appIcon(bundle)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(profileDisplayName(bundle)).font(.body)
-                        Text("继承全局 · 已覆盖 \(overrides.count) 项" +
-                             (names.isEmpty ? "" : "（\(names.prefix(5).joined(separator: "、"))\(names.count > 5 ? "…" : "")）"))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text("查看详情").font(.caption).foregroundStyle(Color.accentColor)
-                    Image(systemName: "chevron.right").foregroundStyle(.secondary).font(.caption)
+        // 整行可点进详情；删除只在 hover 时出现（系统设置语汇：行尾只留 chevron），也可右键删除
+        HStack(spacing: Spacing.intra) {
+            appIcon(bundle)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(profileDisplayName(bundle)).font(.body)
+                Text("继承全局 · 已覆盖 \(overrides.count) 项" +
+                     (names.isEmpty ? "" : "（\(names.prefix(5).joined(separator: "、"))\(names.count > 5 ? "…" : "")）"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if hoveredProfile == bundle {
+                Button {
+                    removeProfile(bundle)
+                } label: {
+                    Image(systemName: "trash").foregroundStyle(.secondary).font(.caption)
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .help("删除该 App 专用方案")
+                .transition(.opacity)
             }
-            .buttonStyle(.plain)
-            Button {
-                model.config.profiles.removeValue(forKey: bundle)
-                if model.currentProfile == bundle { model.currentProfile = "global" }
-                model.saveConfig()
-            } label: {
-                Image(systemName: "trash").foregroundStyle(.secondary).font(.caption)
-            }
-            .buttonStyle(.plain)
-            .help("删除该 App 专用方案")
+            Image(systemName: "chevron.right").foregroundStyle(.secondary).font(.caption)
         }
         .padding(.horizontal, Spacing.rowH)
         .padding(.vertical, Spacing.rowV)
         .frame(minHeight: Spacing.rowMinHeight)
+        .contentShape(Rectangle())
+        .onTapGesture { detailProfile = ProfileDetailSelection(id: bundle) }
+        .onHover { hovering in
+            withAnimation(Motion.select) { hoveredProfile = hovering ? bundle : nil }
+        }
+        .contextMenu {
+            Button("查看详情") { detailProfile = ProfileDetailSelection(id: bundle) }
+            Button("删除该 App 专用方案", role: .destructive) { removeProfile(bundle) }
+        }
+    }
+
+    private func removeProfile(_ bundle: String) {
+        model.config.profiles.removeValue(forKey: bundle)
+        if model.currentProfile == bundle { model.currentProfile = "global" }
+        model.saveConfig()
     }
 
     private func appIcon(_ bundle: String) -> some View {
@@ -126,11 +135,11 @@ struct ProfilePage: View {
                     .resizable().frame(width: 24, height: 24)
             } else {
                 Text(String(profileDisplayName(bundle).prefix(2)))
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.white)
                     .frame(width: 24, height: 24)
                     .background(Color.gray)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.small))
             }
         }
     }
@@ -272,7 +281,7 @@ struct PresetLibrarySheet: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(preset.displayName).font(.system(size: 13, weight: .semibold))
+                    Text(preset.displayName).font(.headline)
                     if let bundle = preset.bundleID {
                         Text("建议应用到：\(profileDisplayName(bundle))")
                             .font(.caption2).foregroundStyle(.secondary)
@@ -329,7 +338,7 @@ struct PresetLibrarySheet: View {
                     .padding(.vertical, 2)
                     .padding(.horizontal, 6)
                     .background(row.conflict ? Color.yellow.opacity(0.15) : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.small))
                 }
             }
         }
