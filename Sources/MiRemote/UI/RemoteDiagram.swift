@@ -119,6 +119,10 @@ struct RemoteDiagram: View {
     @Binding var selected: RemoteKey
     var flashing: RemoteKey?
     var connected: Bool
+    /// 额外强调的键（向导配对步高亮 主页+返回；与选中/回显共用高亮样式）
+    var emphasized: Set<RemoteKey> = []
+    /// false = 纯展示（不可点选、不画选中高亮），供向导等只读场景
+    var interactive: Bool = true
 
     private typealias G = RemoteDiagramGeometry
     private let bodyFill = Color(nsColor: NSColor(name: nil) { $0.name == .darkAqua
@@ -137,6 +141,7 @@ struct RemoteDiagram: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
             .onTapGesture { location in
+                guard interactive else { return }
                 let origin = CGPoint(x: (geo.size.width - G.canvas.width * scale) / 2,
                                      y: (geo.size.height - G.canvas.height * scale) / 2)
                 let logical = CGPoint(x: (location.x - origin.x) / scale,
@@ -149,7 +154,9 @@ struct RemoteDiagram: View {
         .aspectRatio(G.canvas.width / G.canvas.height, contentMode: .fit)
     }
 
-    private func highlighted(_ key: RemoteKey) -> Bool { selected == key || flashing == key }
+    private func highlighted(_ key: RemoteKey) -> Bool {
+        (interactive && selected == key) || flashing == key || emphasized.contains(key)
+    }
 
     @ViewBuilder
     private func canvasView(scale: CGFloat) -> some View {

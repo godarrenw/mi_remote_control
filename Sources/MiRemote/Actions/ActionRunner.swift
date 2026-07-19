@@ -51,6 +51,10 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
     /// CLI 模式无 GUI，保持 nil，仅记日志。写主线程/读引擎线程，赋值一次后只读。
     nonisolated(unsafe) static var onOverlay: ((String) -> Void)?
 
+    /// `system("app_mru_back")` 出口：切到上一个外部 App（KeyMapperApp 的 MRU 栈）。
+    /// 服务接线期设置、主线程执行；未接线（如 --run-action 单发）仅记日志。
+    nonisolated(unsafe) static var onAppMRUBack: (() -> Void)?
+
     // MARK: - ActionRunning
     func run(_ action: Action) {
         switch action {
@@ -129,6 +133,12 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
             // 显式锁屏：调用登录窗口的 CGSession（不引私有 API，走命令行）。
             run(process: "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession",
                 ["-suspend"])
+        case "app_mru_back":
+            if let hook = Self.onAppMRUBack {
+                DispatchQueue.main.async { hook() }
+            } else {
+                log("app_mru_back 需要按键服务运行中（MRU 栈由前台 App 历史维护）")
+            }
         case "screenshot":
             // Cmd+Shift+4 区域截图（DESIGN §3.2 system 列出截图）。
             synth(keyCode: 21, deviceBit: 0x08 | 0x02, mask: [.maskCommand, .maskShift]) // 4

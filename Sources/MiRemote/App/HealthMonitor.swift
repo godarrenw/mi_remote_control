@@ -152,6 +152,18 @@ final class HealthMonitor: @unchecked Sendable {
         return true
     }
 
+    /// 只探测不持有：能拿到锁说明没有活实例，立即释放。打开失败保守视为「有实例」，
+    /// 让调用方（--doctor 残留清理）走跳过分支而不是误清在用映射。
+    static func anotherInstanceRunning() -> Bool {
+        let path = lockFilePath()
+        try? FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        guard let fd = tryLock(path: path) else { return true }
+        flock(fd, LOCK_UN)
+        close(fd)
+        return false
+    }
+
     // MARK: 健康状态机
 
     private struct State {
@@ -261,9 +273,12 @@ final class HealthMonitor: @unchecked Sendable {
     // MARK: 一键体检与修复
 
     /// 逐项检查→能修的修→修不了的给指引。standalone（--doctor，无运行中的 tap/BLE）
-    /// 只做只读检查 + 残留清理，不安装新映射；运行时（未来 M5 按钮）传入 sources
+    /// 只做只读检查 + 残留清理，不安装新映射；运行时（M5 体检按钮）传入 sources
     /// 快照后残留清理会自动跳过（映射在用不是残留）。
+    /// skipResidualCleanup：standalone 但探测到另一个活实例时置 true——那份实例的
+    /// hidutil 中转映射正在使用，清理会打断它（--doctor 与 GUI 并行的场景，N-29）。
     static func runRepair(runtime: HealthSources? = nil,
+                          skipResidualCleanup: Bool = false,
                           reinstallMapping: (() -> Void)? = nil) -> RepairReport {
         var items: [RepairItem] = []
 
@@ -320,6 +335,10 @@ final class HealthMonitor: @unchecked Sendable {
                 items.append(RepairItem(name: "hidutil 中转映射", status: .failed,
                                         message: "无法查询设备映射（hidutil 调用失败）", guideURL: nil))
             }
+        } else if skipResidualCleanup {
+            items.append(RepairItem(name: "hidutil 映射残留", status: .info,
+                                    message: "检测到另一个 MiRemote 实例正在运行，映射在用，跳过残留清理",
+                                    guideURL: nil))
         } else {
             switch KeyRemapper.cleanResidualMapping() {
             case .none:

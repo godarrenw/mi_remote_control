@@ -141,7 +141,7 @@ enum Presets {
     static let ghosttyAI = Preset(
         id: "ai_ghostty",
         displayName: "Ghostty · Codex / Claude Code",
-        note: "左右切 Tab，上下选 CLI 选项，OK=确认、长按=Ctrl+C，返回=Esc、长按=Ctrl+U 清行。TV 单击进 App 控制模式，长按=新建 Tab ⌘T（App 主操作）。",
+        note: "左右切 Tab，上下选 CLI 选项，OK=确认、长按=Ctrl+C，返回=Esc、长按=Ctrl+U 清行。TV 单击进 App 控制模式，长按=按下「2」批准并不再问（CC/Codex 编号菜单第 2 项，vibe 调研 §1.3 主操作）。",
         bundleID: "com.mitchellh.ghostty",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil),
@@ -158,8 +158,32 @@ enum Presets {
             ], layers: ["1": ks("return", ["left_cmd", "left_shift"])]),
             "back": KeyBinding(tap: ks("escape"), hold: ks("u", ["left_ctrl"])),
             "home": KeyBinding(tap: .focusInput),
-            // TV 主操作：新建 Tab（与全局默认一致，显式声明便于用户按 App 改）
-            "tv": KeyBinding(hold: ks("t", ["left_cmd"])),
+            // TV 主操作：批准并不再问（`2`）——最省心的信任放行（vibe 调研 §1.3/§7）。
+            "tv": KeyBinding(hold: ks("2")),
+        ]
+    )
+
+    /// ChatGPT macOS 桌面版（vibe 调研 §2：原生 App，多数键位官方可查证）。
+    static let chatGPT = Preset(
+        id: "ai_chatgpt_desktop",
+        displayName: "ChatGPT 桌面版",
+        note: """
+        上下选择，OK=发送，返回=Esc；控制模式内 返回=Cmd+. 停止生成、菜单=Cmd+K 搜索/历史会话；\
+        TV 长按=新对话 ⌘⇧O。语音输入推荐用遥控器自带语音链路（ChatGPT 内置语音无公开快捷键，待实测）。
+        """,
+        bundleID: "com.openai.chat",
+        bindings: [
+            "up": KeyBinding(tap: ks("up_arrow")),
+            "down": KeyBinding(tap: ks("down_arrow")),
+            "ok": KeyBinding(tap: ks("return"), gesture: [
+                "up": .system("mission_control"), "down": .windowCycle(scope: "app"),
+                "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
+            ]),
+            "back": KeyBinding(tap: ks("escape"),
+                               layers: ["2": ks("period", ["left_cmd"])]),   // Cmd+. 停止生成
+            "menu": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),        // Cmd+K 搜索/历史
+            "home": KeyBinding(tap: .focusInput),
+            "tv": KeyBinding(hold: ks("o", ["left_cmd", "left_shift"])),     // 新对话（主操作）
         ]
     )
 
@@ -198,6 +222,8 @@ enum Presets {
             ]),
             "back": KeyBinding(tap: ks("left_bracket", ["left_cmd"])),
             "home": KeyBinding(tap: ks("l", ["left_cmd"])),
+            // 控制模式内菜单 = Cmd+K（claude.ai / chatgpt.com 网页版搜索/历史，vibe 调研 §5.2）
+            "menu": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),
             "tv": KeyBinding(hold: ks("t", ["left_cmd"])),
         ]
     )
@@ -237,18 +263,28 @@ enum Presets {
             ]),
             "back": KeyBinding(tap: ks("left_bracket", ["left_cmd"])),
             "home": KeyBinding(tap: ks("l", ["left_cmd"])),
+            // 控制模式内菜单 = Cmd+K（网页版 AI 搜索/历史，vibe 调研 §5.2）
+            "menu": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),
             "tv": KeyBinding(hold: ks("t", ["left_cmd"])),
         ]
     )
 
+    /// 微信 Mac 官方快捷键极少（vibe 调研 §4：Cmd+G 下一未读 / Enter 发送 / Cmd+, 设置）。
+    /// 切指定会话、引用回复、表情面板等无原生键——【待 AX 实现】（AX 遍历会话列表 AXRow /
+    /// 合成右键找「引用」AXMenuItem），落地前预设只绑键位类操作。
     static let weChat = Preset(
         id: "chat_wechat",
         displayName: "微信",
-        note: "上下浏览会话/消息，OK=发送，返回=Esc，主页键=搜索；TV 长按=新建聊天 ⌘N（App 主操作）。",
+        note: """
+        上下浏览会话/消息，OK=发送，返回=Esc，主页键=搜索；控制模式内 下=Cmd+G 下一个未读会话。\
+        TV 长按=切到文件传输助手（宏：搜索→键入→回车，【待实测】）。\
+        上一个会话/引用回复等无原生快捷键，待 AX 实现后补。
+        """,
         bundleID: "com.tencent.xinWeChat",
         bindings: [
             "up": KeyBinding(tap: ks("up_arrow")),
-            "down": KeyBinding(tap: ks("down_arrow")),
+            "down": KeyBinding(tap: ks("down_arrow"),
+                               layers: ["2": ks("g", ["left_cmd"])]),   // 下一个未读会话（官方唯一会话跳转键）
             "left": KeyBinding(tap: ks("page_up")),
             "right": KeyBinding(tap: ks("page_down")),
             "ok": KeyBinding(tap: ks("return"), gesture: [
@@ -257,11 +293,23 @@ enum Presets {
             ]),
             "back": KeyBinding(tap: ks("escape")),
             "home": KeyBinding(tap: ks("f", ["left_cmd"])),
-            "tv": KeyBinding(hold: ks("n", ["left_cmd"])),
+            // 控制模式内菜单 / TV 长按 = 切文件传输助手（Vibe 高频「甩给自己」，微信无原生键）。
+            // 宏路径【待实测】：搜索框快捷键与聚焦时序需实机确认。
+            "menu": KeyBinding(layers: ["2": fileTransferMacro]),
+            "tv": KeyBinding(hold: fileTransferMacro),
         ]
     )
 
-    static let workPresets: [Preset] = [ghosttyAI, codexDesktop, chrome, safari, claudeDesktop, weChat]
+    /// 微信「切到文件传输助手」宏：聚焦搜索 → 键入名称 → 回车（vibe 调研 §4.3）。
+    private static let fileTransferMacro: Action = .macro(steps: [
+        .action(ks("f", ["left_cmd"])),
+        .delay(ms: 300),
+        .text("文件传输助手"),
+        .delay(ms: 400),
+        .action(ks("return")),
+    ])
+
+    static let workPresets: [Preset] = [ghosttyAI, codexDesktop, chatGPT, chrome, safari, claudeDesktop, weChat]
 
     // MARK: - 4) 媒体 + 演示 per-app 预设
     //
@@ -357,14 +405,18 @@ enum Presets {
         ]
     )
 
-    /// 飞书：TV=静音（bundle id 与快捷键均待实测）
+    /// 飞书：TV=静音（bundle id 与 Mac 修饰键映射待实测）
     static let feishu = Preset(
         id: "meeting_feishu",
         displayName: "飞书会议",
-        note: "TV=麦克风静音。bundle id（com.electron.lark）与快捷键均【待实测】，暂用 Cmd+Shift+A 默认，接线前请实机确认。",
+        note: """
+        TV=会议麦克风静音（官方 Alt+Shift+D，Mac 侧按 Option+Shift+D 合成）。\
+        bundle id（com.electron.lark）与 Mac 修饰键映射均【待实测】，接线前请在 App 内 Cmd+/ 快捷键列表实机确认。
+        """,
         bundleID: "com.electron.lark",
         bindings: [
-            "tv": KeyBinding(tap: ks("a", ["left_cmd", "left_shift"])),
+            // vibe 调研 §3.1：会议开关麦克风 = Alt+Shift+D（官方文档），非 Zoom 的 Cmd+Shift+A。
+            "tv": KeyBinding(tap: ks("d", ["left_option", "left_shift"])),
         ]
     )
 

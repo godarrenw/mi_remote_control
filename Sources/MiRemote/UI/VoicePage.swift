@@ -1,10 +1,23 @@
 import SwiftUI
+import Carbon.HIToolbox
+
+/// 当前键盘输入法的 InputSourceID（如 "com.bytedance.inputmethod.Doubao..."）。
+func currentInputSourceID() -> String? {
+    guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+          let ptr = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else { return nil }
+    return Unmanaged<CFString>.fromOpaque(ptr).takeUnretainedValue() as String
+}
 
 @MainActor
 struct VoicePage: View {
     @EnvironmentObject var model: AppModel
     @State private var selectedProfile = "global"
     @State private var showAddApp = false
+    // 链路自检状态（N-17：跨 3 个 App 的语音链路逐项亮灯）
+    @State private var hadAudioFrames = false
+    @State private var imeIsDoubao = false
+    @State private var remoteSeen = false
+    @State private var checkTimer: Timer?
 
     private let triggerKeys: [(String, String)] = [
         ("right_option", "右 Option ⌥（推荐）"), ("left_option", "左 Option ⌥"),
@@ -119,6 +132,10 @@ struct VoicePage: View {
                     .padding(14)
                 }
 
+                linkSelfCheckGroup
+
+                doubaoGuideGroup
+
                 SettingsGroup(title: "BlackHole 虚拟声卡") {
                     SettingsRow(icon: blackHoleInstalled ? "checkmark.circle.fill" : "xmark.circle.fill",
                                 iconColor: blackHoleInstalled ? .green : .red,
@@ -156,6 +173,95 @@ struct VoicePage: View {
             .padding(24)
         }
         .sheet(isPresented: $showAddApp) { AddRunningAppSheet() }
+        .onAppear {
+            refreshLinkCheck()
+            checkTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+                Task { @MainActor in refreshLinkCheck() }
+            }
+        }
+        .onDisappear { checkTimer?.invalidate(); checkTimer = nil }
+        .onChange(of: model.levelBars) { _, bars in
+            // 语音会话期间收到非零电平 = 音频帧真的到了
+            if model.voiceActive, (bars.last ?? 0) > 0.02 { hadAudioFrames = true }
+        }
+    }
+
+    private func refreshLinkCheck() {
+        imeIsDoubao = currentInputSourceID()?.hasPrefix("com.bytedance.inputmethod") == true
+        remoteSeen = model.connected || EnvironmentCheck.remoteConnected().state == .granted
+    }
+
+    // MARK: 链路自检（逐项亮灯，每项失败给一句修法）
+
+    private enum CheckLight { case ok, bad, pending }
+
+    private var linkSelfCheckGroup: some View {
+        SettingsGroup(title: "链路自检") {
+            checkRow(light: blackHoleInstalled ? .ok : .bad,
+                     title: "BlackHole 已安装",
+                     fix: "没装：在下方「BlackHole 虚拟声卡」点“去下载”，装完回到首启向导第 2 步重启音频服务。")
+            RowDivider()
+            checkRow(light: remoteSeen ? .ok : .bad,
+                     title: "遥控器已连接",
+                     fix: "没连上：检查电量并靠近 Mac；仍不行就长按 主页+返回 3 秒重新配对。")
+            RowDivider()
+            checkRow(light: hadAudioFrames ? .ok : (model.voiceActive ? .bad : .pending),
+                     title: "按语音键有音频帧",
+                     fix: "现在按住遥控器语音键说一句话——下方电平表跳动即通过；不跳请确认输入模式选了「遥控器麦克风」。",
+                     pendingText: "待检测（按住语音键说话）")
+            RowDivider()
+            checkRow(light: imeIsDoubao ? .ok : .bad,
+                     title: "当前输入法是豆包",
+                     fix: "点菜单栏输入法图标切到豆包输入法；没装豆包则先安装并在系统设置里启用它。")
+        }
+    }
+
+    @ViewBuilder
+    private func checkRow(light: CheckLight, title: String, fix: String, pendingText: String = "未通过") -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: light == .ok ? "checkmark.circle.fill"
+                  : (light == .pending ? "circle.dotted" : "xmark.circle.fill"))
+                .foregroundStyle(light == .ok ? Color.green : (light == .pending ? Color.secondary : Color.red))
+                .frame(width: 20)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.callout)
+                if light != .ok {
+                    Text(fix).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if light != .ok {
+                Text(light == .pending ? pendingText : "未通过")
+                    .font(.caption)
+                    .foregroundStyle(light == .pending ? Color.secondary : Color.orange)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: 豆包麦克风设置图文（N-16；文字版分步，图占位）
+
+    private var doubaoGuideGroup: some View {
+        SettingsGroup(title: "豆包麦克风设置（遥控器麦克风模式必做一次）") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("1. 打开「豆包」App → 点右下角头像进入设置。")
+                Text("2. 找到「语音 / 麦克风」设置项。")
+                Text("3. 把麦克风（音频输入设备）从默认改为 **BlackHole 2ch**。")
+                Text("4. 回到这里按住遥控器语音键说话——上方自检第 3 项变绿即成功。")
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(height: 90)
+                    .overlay(
+                        Label("示意图占位（豆包设置 · 麦克风选 BlackHole 2ch）", systemImage: "photo")
+                            .font(.caption).foregroundStyle(.secondary))
+                Text("只需要设置一次；说话时 MiRemote 会临时把系统输入切到 BlackHole，松开语音键约 1 秒后自动还原。")
+                    .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+            }
+            .font(.caption)
+            .padding(14)
+        }
     }
 
     private var triggerKeyBinding: Binding<String> {

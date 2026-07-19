@@ -147,6 +147,29 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        // 首次关窗说明「关窗 ≠ 退出」（N-10/25/27 心智坑）：一次性面板 + 不再提示
+        let d = UserDefaults.standard
+        if !d.bool(forKey: Prefs.closeNoticeAcknowledged) {
+            let alert = NSAlert()
+            alert.messageText = "MiRemote 转入后台，继续工作"
+            alert.informativeText = """
+            关闭窗口不会退出：MiRemote 会留在后台继续控制遥控器，Dock 图标随之隐藏。
+            · 想再打开设置：点菜单栏遥控器图标，或从启动台 / Spotlight 打开 MiRemote。
+            · 想真正退出：菜单栏图标 →「退出 MiRemote」（退出时自动恢复真实键盘）。
+            · 卸载前请务必先退出，否则按键中转可能残留、影响真实键盘。
+            """
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = "不再提示"
+            alert.addButton(withTitle: "知道了")
+            alert.runModal()
+            if alert.suppressionButton?.state == .on {
+                d.set(true, forKey: Prefs.closeNoticeAcknowledged)
+            }
+        }
+        return true
+    }
+
     func windowWillClose(_ notification: Notification) {
         // 关窗不退出：转后台 accessory，隐藏 Dock 图标；服务照跑。
         DispatchQueue.main.async {

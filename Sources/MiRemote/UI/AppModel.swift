@@ -32,6 +32,11 @@ enum Prefs {
     static let seizeDevice    = "com.miremote.pref.seizeDevice"
     static let exitConfirm    = "com.miremote.pref.exitConfirm"
     static let onboardingDone = "com.miremote.pref.hasCompletedOnboarding"
+    /// 首次关窗「转后台不退出」说明是否已确认不再提示（N-10/25/27）
+    static let closeNoticeAcknowledged = "com.miremote.pref.closeNoticeAcknowledged"
+    /// 上次运行结束时两项核心权限的授权快照（升级失权检测，ux-flows 旅程 7）
+    static let lastAxGranted = "com.miremote.pref.lastAxGranted"
+    static let lastImGranted = "com.miremote.pref.lastImGranted"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -42,6 +47,9 @@ enum Prefs {
             seizeDevice: true,
             exitConfirm: true,
             onboardingDone: false,
+            closeNoticeAcknowledged: false,
+            lastAxGranted: false,
+            lastImGranted: false,
         ])
     }
 }
@@ -172,6 +180,27 @@ func modeDisplayName(_ number: Int) -> String {
     case 2: return "App 控制模式"   // v2：TV 单击进出，弹 HUD（原「AI 助手模式」）
     case 3: return "App 导航模式"
     default: return "自定义模式 \(number)"
+    }
+}
+
+/// 层号 → 浮动角标/菜单栏 tooltip 用的语义名（P3/P9：显示名字而非数字）。
+/// 层 2 附带当前前台 App 名（「App 控制 · Ghostty」）。
+func layerBadgeText(_ number: Int, frontAppName: String? = nil) -> String {
+    switch number {
+    case 1: return "快捷控制"
+    case 2: return frontAppName.map { "App 控制 · \($0)" } ?? "App 控制 · AI 批准"
+    case 3: return "App 导航"
+    default: return "自定义模式 \(number)"
+    }
+}
+
+/// 菜单栏图标旁的超短层名（宽度受限，≤4 字）。
+func layerShortText(_ number: Int) -> String {
+    switch number {
+    case 1: return "快捷"
+    case 2: return "控制"
+    case 3: return "导航"
+    default: return "模式\(number)"
     }
 }
 
@@ -394,6 +423,11 @@ final class AppModel: ObservableObject {
     func noteVoice(_ active: Bool) { voiceActive = active }
     func noteBattery(_ pct: Int) { batteryPercent = pct }
     func noteSeize(_ ok: Bool) { degraded = !ok }
+
+    /// 层 2 角标/浮层展示用的前台 App 名（引擎未跑时为 nil）。
+    var frontAppNameForBadge: String? {
+        services?.keyMapper?.lastExternalApplication?.localizedName
+    }
 
     func runHealthRepair() -> String {
         guard let report = services?.runRepair() else { return "引擎未运行，已跳过运行时修复" }

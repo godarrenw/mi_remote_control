@@ -10,12 +10,9 @@ import AppKit
 let startupArgs = Array(CommandLine.arguments.dropFirst())
 if startupArgs == ["--self-test"] { exit(SelfTest.run()) }
 
-// 两份进程会同时争用 hidutil / CGEventTap，因此除 --ui-preview（引擎不启动、
-// 不装映射不抢键盘，纯界面开发验证）外都先获取单实例锁。
-if !startupArgs.contains("--ui-preview"), !HealthMonitor.acquireSingleInstanceLock() {
-    print("已有实例在运行（锁文件 \(HealthMonitor.lockFilePath())），本次启动退出。")
-    exit(1)
-}
+// 单实例锁在参数解析【之后】获取：--help / --doctor / --list-audio-devices /
+// --login-item status 等只读子命令在解析中就 exit，不与运行中的实例争用
+// hidutil / CGEventTap，GUI 在跑时也必须能随时执行（N-29）。
 
 var opts = AppServices.Options()
 var cliServiceMode = false
@@ -31,7 +28,10 @@ while let argument = args.first {
     case "--self-test":
         exit(SelfTest.run())
     case "--doctor":
-        let report = HealthMonitor.runRepair()
+        // 体检是 standalone 只读 + 残留清理；但有活实例时 hidutil 中转映射正在使用，
+        // 不是残留——探测到活实例就跳过清理，绝不把在用的映射当残留清掉。
+        let report = HealthMonitor.runRepair(
+            skipResidualCleanup: HealthMonitor.anotherInstanceRunning())
         print("MiRemote 一键体检")
         report.lines().forEach { print($0) }
         print(report.needsUser
@@ -128,6 +128,14 @@ while let argument = args.first {
 
 // 单独传 --verbose 时沿用旧版 CLI 服务模式。
 if opts.verbose && !uiPreview { cliServiceMode = true }
+
+// 两份长驻进程会同时争用 hidutil / CGEventTap，CLI 服务模式与 GUI 都要独占；
+// --ui-preview（引擎不启动、不装映射不抢键盘，纯界面开发验证）豁免。
+if !uiPreview, !HealthMonitor.acquireSingleInstanceLock() {
+    print("已有实例在运行（锁文件 \(HealthMonitor.lockFilePath())），本次启动退出。")
+    print("提示：--help / --doctor 等只读命令不受单实例限制，可随时执行。")
+    exit(1)
+}
 
 if cliServiceMode && !uiPreview {
     let services = AppServices(options: opts)

@@ -29,6 +29,7 @@ struct RootView: View {
     @State private var selection: SidebarItem = .mapping
     @State private var showOnboarding = false
     @State private var showHealthCheck = false
+    @State private var showReauth = false
 
     var body: some View {
         NavigationSplitView {
@@ -76,8 +77,15 @@ struct RootView: View {
         .frame(minWidth: 760, minHeight: 560)
         .sheet(isPresented: $showOnboarding) { OnboardingWizard() }
         .sheet(isPresented: $showHealthCheck) { HealthCheckSheet() }
+        .sheet(isPresented: $showReauth) { ReauthSheet() }
         .onAppear {
-            if !model.hasCompletedOnboarding { showOnboarding = true }
+            if !model.hasCompletedOnboarding {
+                showOnboarding = true
+            } else if !PermissionMemory.lostPermissions().isEmpty {
+                // 升级失权（上次有授权、这次没了）→ 自动弹精简重授权 sheet
+                showReauth = true
+            }
+            PermissionMemory.snapshot()
         }
         .onReceive(NotificationCenter.default.publisher(for: .miremoteShowHealthCheck)) { _ in
             showHealthCheck = true

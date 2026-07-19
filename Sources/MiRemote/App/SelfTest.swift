@@ -409,7 +409,7 @@ enum SelfTest {
             let migrated = migrateConfigIfNeeded(legacy)
             // v1→v2 曾把 menu.tap 设为导航模式，v4（心智模型 v2）再统一改写为窗口选择器浮层。
             expect(migrated.version == MappingConfig.currentVersion
-                   && migrated.settings.doubleMs == 300
+                   && migrated.settings.doubleMs == 250
                    && migrated.profiles["global"]?["menu"]?.tap == .overlay("window_picker"),
                    "v1 迁移版本/菜单键 v2 语义/双击窗口")
             expect(migrated.profiles["global"]?["ok"]?.gesture?["up"] == .openApp("com.example.custom")
@@ -420,8 +420,9 @@ enum SelfTest {
                    && migrated.profiles["com.google.Chrome"] != nil
                    && migrated.profiles["com.apple.Safari"] != nil
                    && migrated.profiles["com.anthropic.claudefordesktop"] != nil
+                   && migrated.profiles["com.openai.chat"] != nil
                    && migrated.profiles["com.tencent.xinWeChat"] != nil,
-                   "v1 迁移补齐六个高频 Profile")
+                   "v1 迁移补齐高频 Profile（含 ChatGPT 桌面版）")
 
             var alreadyV2 = migrated
             alreadyV2.version = 2
@@ -497,6 +498,7 @@ enum SelfTest {
 
         // 加固-3. resetInputState：清瞬时层/OK 物理态/在途定时器（设备移除/睡眠/tap 失效恢复路径）
         expect(MappingEngine.resetSelfCheck(), "MappingEngine resetInputState 自测")
+        expect(MappingEngine.escapeHatchSelfCheck(), "全局逃生键（长按菜单 1.5s）自测")
 
         // M6-1. EnvironmentCheck API 健全性：只断言可调用不崩、返回结构完整，
         //       不断言具体授权状态（取决于运行环境）。
@@ -825,6 +827,61 @@ enum SelfTest {
                    "uninstall 只删自己的条目，还原为原始配置")
             expect(!FileManager.default.fileExists(atPath: script.path), "uninstall 移除发信脚本")
             expect(!ClaudeHooks.installed(settings: settings), "uninstall 后 status=未安装")
+        }
+
+        // ===== 体验修复批次（persona 报告 N-29/P2/P4/P6/P7）=====
+
+        // FX-1. doubleMs 收敛（P7）：默认配置里存在双击绑定的键（Zoom TV），故 doubleMs 必须 >0。
+        do {
+            let cfg = defaultConfig()
+            let hasDouble = cfg.profiles.values.contains { profile in
+                profile.values.contains { $0.double != nil }
+            }
+            expect(hasDouble, "默认配置存在双击绑定（Zoom TV）")
+            expect(cfg.settings.doubleMs == 250 && MappingConfig.Settings().doubleMs == 250,
+                   "doubleMs 默认 250（有双击绑定时窗口必须 >0）", "\(cfg.settings.doubleMs)")
+        }
+
+        // FX-2. 鼠标模式入口（P4）：默认配置电源长按 = mouse_mode。
+        expect(defaultConfig().profiles["global"]?["power"]?.hold == .mouseMode,
+               "默认配置：电源长按=鼠标模式入口")
+
+        // FX-3. MRU 回切纯逻辑（P6）：压栈去重/截断 + 回切目标挑选。
+        do {
+            var s: [String] = []
+            s = KeyMapperApp.mruPush(s, "a")
+            s = KeyMapperApp.mruPush(s, "b")
+            s = KeyMapperApp.mruPush(s, "c")
+            expect(s == ["c", "b", "a"], "MRU 压栈最新在前", "\(s)")
+            s = KeyMapperApp.mruPush(s, "b")
+            expect(s == ["b", "c", "a"], "MRU 重复项上浮去重", "\(s)")
+            s = KeyMapperApp.mruPush(s, "d")
+            expect(s == ["d", "b", "c"], "MRU 容量截断到 3", "\(s)")
+            expect(KeyMapperApp.mruBackTarget(s, current: "d") == "b", "MRU 回切=第一个非当前项")
+            expect(KeyMapperApp.mruBackTarget(["d"], current: "d") == nil, "MRU 只有当前项时无目标")
+            expect(KeyMapperApp.mruBackTarget([], current: nil) == nil, "MRU 空栈无目标")
+        }
+
+        // FX-4. app_mru_back 是合法的 system 动作 JSON（可绑定）。
+        do {
+            let parsed = try? JSONDecoder().decode(
+                Action.self, from: Data(#"{"type":"system","value":"app_mru_back"}"#.utf8))
+            expect(parsed == .system("app_mru_back"), "system(app_mru_back) JSON 可解析绑定")
+        }
+
+        // FX-5. vibe 对齐抽查：ChatGPT 桌面预设入库、Ghostty TV 主操作=「2」、飞书静音键改官方值。
+        do {
+            expect(Presets.workPresets.contains { $0.id == "ai_chatgpt_desktop" }
+                   && Presets.chatGPT.bundleID == "com.openai.chat"
+                   && Presets.chatGPT.bindings["tv"]?.hold == .keyStroke(key: "o", mods: ["left_cmd", "left_shift"]),
+                   "ChatGPT 桌面预设（TV 长按=新对话）")
+            expect(Presets.ghosttyAI.bindings["tv"]?.hold == .keyStroke(key: "2", mods: []),
+                   "Ghostty TV 长按=批准并不再问(2)")
+            expect(Presets.feishu.bindings["tv"]?.tap == .keyStroke(key: "d", mods: ["left_option", "left_shift"]),
+                   "飞书静音=Option+Shift+D（官方 Alt+Shift+D）")
+            expect(Presets.weChat.bindings["tv"]?.hold != nil
+                   && Presets.weChat.bindings["menu"]?.tap == nil,
+                   "微信 TV 长按=文件传输助手宏且不占菜单 base 槽")
         }
 
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")

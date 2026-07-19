@@ -169,7 +169,9 @@ struct MappingConfig: Codable {
     static let currentVersion = 4   // v4 = 按键心智模型 v2（DESIGN §3.1b）
     struct Settings: Codable {
         var holdMs: Int = 350
-        var doubleMs: Int = 300      // 给 TV 双击切 AI 模式留出可操作窗口
+        /// 双击判定窗口。默认配置存在双击绑定（如 Zoom 预设 TV 双击=摄像头），故必须 >0；
+        /// 引擎只对「配了 double 的键」引入此延迟，其余键 tap 仍零延迟（P7 收敛：定 250）。
+        var doubleMs: Int = 250
         /// 基础文字输入态下，长按返回/删除是否执行“全选并删除”。nil 与 false 等价，
         /// 使用 Optional 以兼容旧版 config.json 的自动解码。
         var deleteAllOnHold: Bool? = nil

@@ -80,7 +80,7 @@ func migrateConfigIfNeeded(_ input: MappingConfig) -> MappingConfig {
         var menu = cfg.profiles["global"]?["menu"] ?? KeyBinding()
         menu.tap = .layerToggle(3)
         cfg.profiles["global"]?["menu"] = menu
-        if cfg.settings.doubleMs < 150 { cfg.settings.doubleMs = 300 }
+        if cfg.settings.doubleMs < 150 { cfg.settings.doubleMs = 250 }
         cfg.version = 2
     }
     if cfg.version < 3 {
@@ -193,7 +193,9 @@ func defaultConfig() -> MappingConfig {
         "tv":      KeyBinding(tap: .layerToggle(2),
                               hold: .keyStroke(key: "t", mods: ["left_cmd"]),
                               layers: ["1": .system("app_expose")]),
-        "power":   KeyBinding(tap: .system("display_sleep")),
+        // 电源长按 = 鼠标模式开关（P4：给 mouse_mode 一个开箱可达的默认入口；
+        // 方向键移动指针、OK=左键。tap 保持键帽语义的显示器睡眠）。
+        "power":   KeyBinding(tap: .system("display_sleep"), hold: .mouseMode),
         "volUp":   KeyBinding(tap: .system("volume_up")),
         "volDown": KeyBinding(tap: .system("volume_down")),
         "voice":   KeyBinding(tap: .voice),
@@ -336,6 +338,47 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
     /// 最近一个「非本进程」的前台应用（防止本 App 自己的设置窗口污染 per-app profile）。
     private(set) var lastExternalApplication: NSRunningApplication?
 
+    /// 外部 App 的 MRU 栈（最新在前，最多 3 个；[0]=当前前台，[1]=上一个）。
+    /// 主线程维护（NSWorkspace 通知在主线程投递）；App 轮盘 UI 直接读，
+    /// `app_mru_back` 动作经主线程走 activateMRUBack()。
+    private(set) var mruExternalApplications: [NSRunningApplication] = []
+    private static let mruCapacity = 3
+
+    /// MRU 压栈纯逻辑（自测覆盖）：去重后插到栈顶，截断到 cap。
+    static func mruPush(_ stack: [String], _ id: String, cap: Int = mruCapacity) -> [String] {
+        var next = stack.filter { $0 != id }
+        next.insert(id, at: 0)
+        if next.count > cap { next.removeLast(next.count - cap) }
+        return next
+    }
+
+    /// MRU 回切目标纯逻辑（自测覆盖）：栈顶是当前前台，目标 = 第一个非当前项。
+    static func mruBackTarget(_ stack: [String], current: String?) -> String? {
+        stack.first { $0 != current }
+    }
+
+    private func pushMRU(_ app: NSRunningApplication) {
+        mruExternalApplications.removeAll {
+            $0.processIdentifier == app.processIdentifier || $0.isTerminated
+        }
+        mruExternalApplications.insert(app, at: 0)
+        if mruExternalApplications.count > Self.mruCapacity {
+            mruExternalApplications.removeLast(mruExternalApplications.count - Self.mruCapacity)
+        }
+    }
+
+    /// `app_mru_back`：切到上一个外部 App（栈里第一个非当前前台且仍存活的）。主线程调用。
+    func activateMRUBack() {
+        let currentPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let target = mruExternalApplications.first(where: {
+            !$0.isTerminated && $0.processIdentifier != currentPid
+        }) else {
+            log("app_mru_back：无可回切的上一个 App")
+            return
+        }
+        target.activate()
+    }
+
     init(config: MappingConfig, verbose: Bool) {
         self.verbose = verbose
         engine = MappingEngine(config: config, runner: runner, delegate: self)
@@ -343,6 +386,7 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
         let myPid = ProcessInfo.processInfo.processIdentifier
         if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != myPid {
             lastExternalApplication = front
+            pushMRU(front)
             engine.setActiveProfile(front.bundleIdentifier)
             onActiveApplication?(front.bundleIdentifier)
         }
@@ -353,6 +397,7 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
                   let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   app.processIdentifier != myPid else { return }
             self.lastExternalApplication = app
+            self.pushMRU(app)
             self.engine.setActiveProfile(app.bundleIdentifier)
             self.onActiveApplication?(app.bundleIdentifier)
         }
@@ -494,6 +539,8 @@ final class AppServices {
                     voiceRuleStore?.resolve() ?? VoiceTriggerConfig()
                 }
             }
+            // app_mru_back 动作出口：切到 MRU 栈里的上一个外部 App（P6 核心侧）。
+            ActionRunner.onAppMRUBack = { [weak km] in km?.activateMRUBack() }
             let tap = TapEngine(delegate: km)
             tap.router = km.engine  // 方向键三态分流的快照来源
             let filter = IOHIDOnlyFilter(km)

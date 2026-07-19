@@ -100,6 +100,17 @@ final class MappingEngine: @unchecked Sendable {
     /// 经 mainDispatch 投递到主线程交给浮层处理；浮层关闭（置 nil）即恢复。
     private var overlayHandler: ((ButtonEvent) -> Void)?
 
+    // MARK: - 全局逃生键（P2：模式迷路兜底）
+
+    /// 长按菜单键 1.5s = 逃生：清所有层、退出 App 控制模式、关闭所有浮层，回基础层。
+    /// 硬编码、独立于配置——迷路的用户不需要记得自己配过什么。
+    private static let escapeHoldMs = 1500
+    /// 逃生定时器令牌：菜单键任何按下/松开都自增，作废在途回调（同 KeyState.seq 机制）。
+    private var escapeSeq = 0
+    /// UI 侧接线钩子（主线程回调）：逃生触发时关闭所有浮层/HUD（OverlayCenter 全收）。
+    /// 引擎自身已清捕获态与层，未接线（CLI 模式）也能自愈；接线期设置，之后只读。
+    var onEscapeHatch: (() -> Void)?
+
     // MARK: - 分流快照（tap 回调线程读，引擎 queue 写）
 
     /// okDown 竞争窗口（已消除）：ok 按下与方向键几乎同时到达时，本快照的 okDown
@@ -251,6 +262,15 @@ final class MappingEngine: @unchecked Sendable {
     }
 
     private func _handle(_ event: ButtonEvent) {
+        // 全局逃生键跟踪必须在浮层捕获分支【之前】：浮层打开时事件不进状态机，
+        // 但长按菜单 1.5s 的逃生兜底在任何状态（含捕获态）都要生效。
+        if event.key == .menu {
+            escapeSeq &+= 1
+            if event.isDown {
+                let token = escapeSeq
+                scheduleAfter(Self.escapeHoldMs) { [weak self] in self?.onEscapeTimer(token) }
+            }
+        }
         // 浮层捕获态：事件不进状态机，直接转交浮层（主线程）。
         if let overlayHandler {
             mainDispatch { overlayHandler(event) }
@@ -314,6 +334,34 @@ final class MappingEngine: @unchecked Sendable {
         scheduleAfter(config.settings.holdMs) { [weak self] in
             self?.onHoldTimer(key, token)
         }
+    }
+
+    private func onEscapeTimer(_ token: Int) {
+        guard escapeSeq == token else { return }   // 菜单键已松开/重按，逃生作废
+        fireEscapeHatch()
+    }
+
+    /// 逃生动作本体：清捕获态 → 清锁定/瞬时层 → 消费掉菜单键本次按压（松开不再产出）
+    /// → 强制通知 layerChanged(0)（层本就是 0 时 recomputeLayer 去重不发，这里补发，
+    /// UI 依此关 HUD/角标）→ 主线程通知 UI 侧关闭所有浮层。
+    private func fireEscapeHatch() {
+        overlayHandler = nil
+        lockedLayer = 0
+        momentaryLayer = nil
+        momentaryOwner = nil
+        if var st = states[.menu] {
+            st.seq &+= 1
+            st.phase = .consumed
+            st.holdFired = false
+            st.suppressTap = false
+            states[.menu] = st
+        }
+        let notified = lastNotifiedLayer
+        recomputeLayer()
+        if notified == 0 { delegate?.layerChanged(0) }
+        publishTapRoute()   // recomputeLayer 层未变时不发布，这里兜底刷新 uiCapture
+        log("ESCAPE 长按菜单 \(Self.escapeHoldMs)ms → 回全局层/关浮层")
+        if let hook = onEscapeHatch { mainDispatch { hook() } }
     }
 
     private func onHoldTimer(_ key: RemoteKey, _ token: Int) {
@@ -917,6 +965,78 @@ extension MappingEngine {
         expect(runner.actions == [.keyStroke(key: "delete", mods: [])], "3 reset 后受保护 Delete 正常 tap")
 
         if ok { print("[MappingEngine.resetSelfCheck] passed") }
+        return ok
+    }
+
+    /// 全局逃生键自测（P2）：长按菜单 1.5s 在锁定层/浮层捕获态/基础层三种状态下的行为，
+    /// 以及提前松开不触发。
+    static func escapeHatchSelfCheck() -> Bool {
+        var ok = true
+        func expect(_ cond: Bool, _ msg: String) {
+            if !cond { ok = false; print("[MappingEngine.escapeHatchSelfCheck] FAIL: \(msg)") }
+        }
+        func makeEngine() -> (MappingEngine, RecordingRunner, RecordingDelegate, ManualClock) {
+            let clock = ManualClock()
+            let runner = RecordingRunner()
+            let del = RecordingDelegate()
+            let engine = MappingEngine(config: makeTestConfig(),
+                                       runner: runner,
+                                       delegate: del,
+                                       dispatch: { $0() },
+                                       scheduleAfter: { ms, work in clock.schedule(ms, work) },
+                                       mainDispatch: { $0() })
+            return (engine, runner, del, clock)
+        }
+        func down(_ e: MappingEngine, _ k: RemoteKey) { e.handle(ButtonEvent(key: k, isDown: true, timeNs: 0)) }
+        func up(_ e: MappingEngine, _ k: RemoteKey)   { e.handle(ButtonEvent(key: k, isDown: false, timeNs: 0)) }
+
+        // 1) 锁定层 2（tv 长按 toggle）→ 长按菜单 1.5s → 强制回层 0，菜单松开无产出。
+        do {
+            let (e, r, d, c) = makeEngine()
+            down(e, .tv); c.advance(100); up(e, .tv)          // toggle → 层2
+            expect(d.layers == [2], "1 先进锁定层2")
+            down(e, .menu); c.advance(1500)
+            expect(e.tapRoute.effectiveLayer == 0, "1 逃生后快照层0")
+            expect(d.layers == [2, 0], "1 逃生通知 layerChanged(0)")
+            up(e, .menu); c.advance(500)
+            expect(r.actions.isEmpty, "1 逃生消费菜单按压，松开无产出")
+        }
+
+        // 2) 浮层捕获态 → 逃生清捕获 + UI 钩子被调 + 层通知补发（层本就 0）。
+        do {
+            let (e, _, d, c) = makeEngine()
+            var hatchFired = 0
+            e.onEscapeHatch = { hatchFired += 1 }
+            e.setOverlayCapture { _ in }
+            expect(e.tapRoute.uiCapture, "2 捕获态就绪")
+            down(e, .menu); c.advance(1500)
+            expect(!e.tapRoute.uiCapture, "2 逃生清除捕获态")
+            expect(hatchFired == 1, "2 UI 关浮层钩子被调一次")
+            expect(d.layers == [0], "2 层本为0仍补发 layerChanged(0)")
+            up(e, .menu)
+        }
+
+        // 3) 提前松开（<1.5s）不触发逃生；锁定层保持。
+        do {
+            let (e, _, d, c) = makeEngine()
+            down(e, .tv); c.advance(100); up(e, .tv)          // 层2
+            down(e, .menu); c.advance(1000); up(e, .menu)
+            c.advance(1000)                                   // 在途定时器到点但令牌已作废
+            expect(d.layers == [2], "3 提前松开不逃生，层保持")
+        }
+
+        // 4) 瞬时层（OK 按住）期间逃生：层清零；OK 后续松开不再补层回落通知。
+        do {
+            let (e, _, d, c) = makeEngine()
+            down(e, .ok); c.advance(100)                      // 瞬时层1
+            expect(d.layers == [1], "4 瞬时层1就绪")
+            down(e, .menu); c.advance(1500)
+            expect(d.layers == [1, 0], "4 逃生清瞬时层")
+            up(e, .menu); up(e, .ok); c.advance(500)
+            expect(d.layers == [1, 0], "4 OK 松开无重复层通知")
+        }
+
+        if ok { print("[MappingEngine.escapeHatchSelfCheck] passed") }
         return ok
     }
 }

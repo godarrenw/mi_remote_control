@@ -63,6 +63,12 @@ struct OnboardingWizard: View {
     @State private var scanTooLong = false
     @State private var axRequestOpened = false
     @State private var imRequestOpened = false
+    // 配对步示意图脉动（高亮 主页+返回 两键）
+    @State private var pulseTimer: Timer?
+    @State private var pairingPulse = true
+    // BlackHole 安装后重启音频服务
+    @State private var coreAudioBusy = false
+    @State private var coreAudioMsg: String?
 
     var body: some View {
         VStack(spacing: 16) {
@@ -130,9 +136,12 @@ struct OnboardingWizard: View {
             }
         }
         .padding(24)
-        .frame(width: 460, height: 420)
+        .frame(width: 460, height: 470)
         .onAppear { startPolling() }
-        .onDisappear { pollTimer?.invalidate(); pollTimer = nil }
+        .onDisappear {
+            pollTimer?.invalidate(); pollTimer = nil
+            pulseTimer?.invalidate(); pulseTimer = nil
+        }
     }
 
     // 第 1 步 · 权限
@@ -177,15 +186,54 @@ struct OnboardingWizard: View {
             PermissionCheckRow(icon: "waveform", title: "BlackHole 2ch",
                                explain: "/Library/Audio/Plug-Ins/HAL/",
                                state: blackhole,
-                               actionTitle: "打开下载页") {
+                               actionTitle: "下载安装包") {
                 if let url = EnvironmentCheck.blackHole().guideURL { NSWorkspace.shared.open(url) }
             }
             if blackhole != .granted {
-                Text("下载安装包并安装（需要输入开机密码，用于注册虚拟声卡）。安装后声音会中断约 1 秒，属正常。装好后本页自动打勾。")
+                Text("① 点「下载安装包」到官方页面下载 .pkg 并双击安装（安装要输开机密码——用于注册虚拟声卡，安全）。\n② 装好后系统有时不会立刻识别，点下面的按钮重启音频服务（声音会中断约 1 秒，属正常）。\n③ 检测到驱动后本行自动亮绿灯并进入下一步。")
                     .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Button {
+                        restartCoreAudio()
+                    } label: {
+                        if coreAudioBusy {
+                            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("重启音频服务中…") }
+                        } else {
+                            Text("我已安装，重启音频服务")
+                        }
+                    }
+                    .disabled(coreAudioBusy)
+                    if let coreAudioMsg {
+                        Text(coreAudioMsg).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("重启音频服务会弹管理员密码框（执行 killall coreaudiod，让系统重新加载声卡驱动）。")
+                    .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
             } else {
                 Label("已安装，可继续下一步", systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)
+            }
+        }
+    }
+
+    /// 「我已安装，重启音频服务」：osascript 管理员执行 killall coreaudiod。
+    private func restartCoreAudio() {
+        coreAudioBusy = true
+        coreAudioMsg = nil
+        DispatchQueue.global().async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            p.arguments = ["-e",
+                "do shell script \"killall coreaudiod\" with administrator privileges with prompt \"MiRemote 需要重启音频服务以加载 BlackHole 驱动\""]
+            var ok = false
+            do {
+                try p.run()
+                p.waitUntilExit()
+                ok = p.terminationStatus == 0
+            } catch { ok = false }
+            DispatchQueue.main.async {
+                coreAudioBusy = false
+                coreAudioMsg = ok ? "已重启，正在重新检测…" : "未完成（可能取消了密码框），可重试"
             }
         }
     }
@@ -204,22 +252,30 @@ struct OnboardingWizard: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
             } else {
-                HStack(spacing: 12) {
-                    Image(systemName: "av.remote")
-                        .font(.system(size: 36))
-                        .foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("长按遥控器「主页键 + 返回键」约 3 秒，直到指示灯闪烁")
+                HStack(alignment: .top, spacing: 16) {
+                    // 可视化：示意图上高亮 主页+返回 两键并脉动（N-05/N-06 配对无图）
+                    RemoteDiagram(selected: .constant(.ok),
+                                  flashing: nil,
+                                  connected: false,
+                                  emphasized: pairingPulse ? [.home, .back] : [],
+                                  interactive: false)
+                        .frame(width: 84)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("同时长按左侧高亮的两个键——「主页 ⌂」和「返回 ←」——约 3 秒")
                             .font(.callout)
+                        Text("指示灯在遥控器顶部电源键旁：快速闪烁 = 进入配对模式；不闪说明没按够 3 秒或电量不足。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("① 长按进入配对 → ② 点下方按钮到系统蓝牙里点「连接」→ ③ 回到这里，连上会自动打勾。")
+                            .font(.caption).foregroundStyle(.secondary)
                         Button("打开蓝牙设置") {
                             if let url = EnvironmentCheck.remoteConnected().guideURL { NSWorkspace.shared.open(url) }
                         }
                         .controlSize(.small)
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("正在等待遥控器出现…").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
-                }
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("正在等待遥控器出现…").font(.caption).foregroundStyle(.secondary)
                 }
                 if scanTooLong {
                     DisclosureGroup("没反应？") {
@@ -240,6 +296,9 @@ struct OnboardingWizard: View {
         refresh()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
             Task { @MainActor in refresh() }
+        }
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: true) { _ in
+            Task { @MainActor in pairingPulse.toggle() }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { scanTooLong = true }
     }
@@ -267,5 +326,93 @@ struct OnboardingWizard: View {
     /// BLE、音频与 hidutil，再直接结束进程。重启用独立 helper 延迟拉起同一 app。
     private func terminateApp(relaunch: Bool) {
         relaunch ? AppLifecycle.quitAndRelaunch(model) : AppLifecycle.quit(model)
+    }
+}
+
+// MARK: - 升级失权检测（ux-flows 旅程 7：无公证分发升级后 cdhash 变化 → TCC 失权）
+
+/// 用 UserDefaults 记住上次运行时两项核心权限的授权状态；本次启动发现
+/// 「上次有、这次没」即判定为升级失权，自动弹精简重授权 sheet。
+enum PermissionMemory {
+    /// 上次记录为已授权、但当前已失效的权限名列表（空 = 无失权）。
+    static func lostPermissions() -> [String] {
+        let d = UserDefaults.standard
+        var lost: [String] = []
+        if d.bool(forKey: Prefs.lastAxGranted),
+           EnvironmentCheck.accessibility().state != .granted { lost.append("辅助功能") }
+        if d.bool(forKey: Prefs.lastImGranted),
+           EnvironmentCheck.inputMonitoring().state != .granted { lost.append("输入监控") }
+        return lost
+    }
+
+    /// 把当前授权状态写入快照（授权只增不减地记录：拿到过就记 true，
+    /// 直到重授 sheet 完成才刷新，避免失权后快照被覆盖导致下次不再提醒）。
+    static func snapshot() {
+        let d = UserDefaults.standard
+        if EnvironmentCheck.accessibility().state == .granted { d.set(true, forKey: Prefs.lastAxGranted) }
+        if EnvironmentCheck.inputMonitoring().state == .granted { d.set(true, forKey: Prefs.lastImGranted) }
+    }
+}
+
+/// 精简重授权 sheet（复用向导第 1 步的 PermissionCheckRow）。
+@MainActor
+struct ReauthSheet: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var ax: EnvCheckState = .unknown
+    @State private var im: EnvCheckState = .unknown
+    @State private var pollTimer: Timer?
+
+    private var allGranted: Bool { ax == .granted && im == .granted }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("检测到你更新了版本，需要重新授权一次").font(.title3.bold())
+            Text("这是 macOS 的安全机制：测试版每次更新都要重新点一下授权，30 秒搞定。你的所有按键设置都还在（配置文件不受升级影响）。")
+                .font(.caption).foregroundStyle(.secondary)
+
+            PermissionCheckRow(icon: "keyboard", title: "输入监控",
+                               explain: "读取遥控器按键事件",
+                               state: im) {
+                _ = EnvironmentCheck.requestInputMonitoring()
+                if let url = EnvironmentCheck.inputMonitoring().guideURL { NSWorkspace.shared.open(url) }
+            }
+            PermissionCheckRow(icon: "accessibility", title: "辅助功能",
+                               explain: "把按键翻译成快捷键/系统动作",
+                               state: ax) {
+                _ = EnvironmentCheck.requestAccessibility()
+                if let url = EnvironmentCheck.accessibility().guideURL { NSWorkspace.shared.open(url) }
+            }
+
+            Spacer(minLength: 0)
+            HStack {
+                Button("稍后再说") { dismiss() }
+                Spacer()
+                if allGranted {
+                    Button("重启 App 生效") {
+                        PermissionMemory.snapshot()
+                        AppLifecycle.quitAndRelaunch(model)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Text("授权后此处自动亮绿灯").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 430, height: 260)
+        .onAppear {
+            refresh()
+            pollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { _ in
+                Task { @MainActor in refresh() }
+            }
+        }
+        .onDisappear { pollTimer?.invalidate(); pollTimer = nil }
+    }
+
+    private func refresh() {
+        ax = EnvironmentCheck.accessibility().state
+        im = EnvironmentCheck.inputMonitoring().state
     }
 }

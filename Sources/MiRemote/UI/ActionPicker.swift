@@ -127,22 +127,54 @@ struct ActionPicker: View {
     @State private var showRecorder = false
     @State private var showShell = false
     @State private var shellText = ""
+    @State private var showMacro = false
 
     var body: some View {
         Menu {
+            // 高频动作在前，进阶项靠后（渐进披露）；覆盖 Contracts.Action 全部类型
             Button("无") { onChange(nil) }
             Button("发送按键…") { showRecorder = true }
+                .help("录制一个真实键盘快捷键，按遥控键时替你按下")
             Menu("系统功能") {
                 ForEach(ActionSummary.systemNames, id: \.value) { item in
                     Button(item.display) { onChange(.system(item.value)) }
                 }
             }
             Button("打开应用…") { pickApp() }
+                .help("一键直达某个 App（比循环切换快得多）")
+            Button("语音输入") { onChange(.voice) }
+                .help("按住说话，经语音链路出字")
+            Menu("窗口与标签") {
+                Button("窗口循环（同应用）") { onChange(.windowCycle(scope: "app")) }
+                    .help("在当前 App 的多个窗口间循环切换")
+                Button("窗口循环（全局 · 回上一个窗口）") { onChange(.windowCycle(scope: "global")) }
+                    .help("按最近使用顺序切换所有 App 的窗口，一下回到刚才用的那个")
+                Divider()
+                Button("下一个标签页") { onChange(.tabJump(dir: 1, index: nil)) }
+                Button("上一个标签页") { onChange(.tabJump(dir: -1, index: nil)) }
+                Menu("跳到第 N 个标签页") {
+                    ForEach(1...9, id: \.self) { n in
+                        Button("第 \(n) 个") { onChange(.tabJump(dir: nil, index: n)) }
+                    }
+                }
+            }
+            Button("鼠标模式开关") { onChange(.mouseMode) }
+                .help("方向键变鼠标移动、OK 变点击，再触发一次退出")
+            Button("聚焦输入框") { onChange(.focusInput) }
+                .help("自动把光标放进前台 App 的输入框")
+            Menu("打开浮层") {
+                ForEach(ActionSummary.overlayNames, id: \.value) { item in
+                    Button(item.display) { onChange(.overlay(item.value)) }
+                }
+            }
+            Divider()
             Button("运行 Shell…") {
                 if case .shell(let cmd)? = action { shellText = cmd } else { shellText = "" }
                 showShell = true
             }
-            Button("语音输入") { onChange(.voice) }
+            .help("执行一条命令行（进阶）")
+            Button("宏（输入一段文本）…") { showMacro = true }
+                .help("按一下键输入整段文字，可选结尾自动回车；多步复杂宏可在配置文件中编写")
             Menu("按住进入功能模式") {
                 ForEach(1...3, id: \.self) { n in
                     Button(modeDisplayName(n)) { onChange(.layerMomentary(n)) }
@@ -151,11 +183,6 @@ struct ActionPicker: View {
             Menu("开关功能模式") {
                 ForEach(1...3, id: \.self) { n in
                     Button(modeDisplayName(n)) { onChange(.layerToggle(n)) }
-                }
-            }
-            Menu("打开浮层") {
-                ForEach(ActionSummary.overlayNames, id: \.value) { item in
-                    Button(item.display) { onChange(.overlay(item.value)) }
                 }
             }
         } label: {
@@ -167,6 +194,9 @@ struct ActionPicker: View {
         .fixedSize()
         .sheet(isPresented: $showRecorder) {
             ShortcutRecorderSheet { onChange($0) }
+        }
+        .sheet(isPresented: $showMacro) {
+            MacroTextSheet(current: action) { onChange($0) }
         }
         .sheet(isPresented: $showShell) {
             VStack(alignment: .leading, spacing: 12) {
@@ -186,6 +216,56 @@ struct ActionPicker: View {
                 }
             }
             .padding(20)
+        }
+    }
+
+    /// 简易宏编辑：输入一段文本 + 可选结尾回车（复杂多步宏走配置文件）。
+    @MainActor
+    private struct MacroTextSheet: View {
+        var current: Action?
+        var onConfirm: (Action) -> Void
+        @Environment(\.dismiss) private var dismiss
+
+        @State private var text = ""
+        @State private var pressReturn = false
+        @State private var existingSteps = 0
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("宏 · 输入一段文本").font(.headline)
+                TextField("要输入的文字（如常用回复、命令）", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 340)
+                Toggle("输入后自动按回车", isOn: $pressReturn)
+                if existingSteps > 0 {
+                    Text("当前绑定是一个 \(existingSteps) 步宏；这里保存会覆盖它。复杂多步宏（按键+延时组合）请直接编辑 config.json 的 macro steps。")
+                        .font(.caption).foregroundStyle(.orange)
+                        .frame(width: 340, alignment: .leading)
+                }
+                HStack {
+                    Spacer()
+                    Button("取消") { dismiss() }
+                    Button("确定") {
+                        var steps: [MacroStep] = [.text(text)]
+                        if pressReturn { steps.append(.action(.keyStroke(key: "return", mods: []))) }
+                        onConfirm(.macro(steps: steps))
+                        dismiss()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(text.isEmpty)
+                }
+            }
+            .padding(20)
+            .onAppear {
+                if case .macro(let steps)? = current {
+                    existingSteps = steps.count
+                    // 已是「文本(+回车)」形态的宏 → 回填可编辑
+                    if case .text(let s)? = steps.first { text = s }
+                    if steps.count == 2, steps.last == .action(.keyStroke(key: "return", mods: [])) {
+                        pressReturn = true
+                    }
+                }
+            }
         }
     }
 

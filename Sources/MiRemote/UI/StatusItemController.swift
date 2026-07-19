@@ -37,7 +37,8 @@ final class StatusItemController: NSObject {
             return
         }
         if statusItem == nil {
-            statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            // variableLength：层激活时图标旁要放语义短名
+            statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         }
         guard let button = statusItem?.button else { return }
         let (symbol, tint, desc) = iconState()
@@ -45,8 +46,9 @@ final class StatusItemController: NSObject {
         img?.isTemplate = tint == nil
         button.image = img
         button.contentTintColor = tint
-        // 层激活时叠加数字角标（用 title 简做）
-        button.title = model.activeLayer != 0 ? " \(model.activeLayer)" : ""
+        // 层激活时叠加语义短名（P3：显示名字而非数字）；tooltip 给全名
+        button.title = model.activeLayer != 0 ? " \(layerShortText(model.activeLayer))" : ""
+        button.toolTip = tooltipText()
         button.imagePosition = .imageLeading
         statusItem?.menu = buildMenu()
     }
@@ -59,6 +61,19 @@ final class StatusItemController: NSObject {
         if model.activeLayer != 0 { return ("switch.2", .controlAccentColor, modeDisplayName(model.activeLayer)) }
         if !model.connected { return ("av.remote", nil, "未连接") }
         return ("av.remote.fill", nil, "已连接")
+    }
+
+    /// tooltip 与浮动角标同步的完整语义描述（P3/P9）。
+    private func tooltipText() -> String {
+        var parts: [String] = ["MiRemote"]
+        if model.degraded { parts.append("故障：按键通道异常，打开体检修复") }
+        if model.voiceActive { parts.append("录音中") }
+        if model.mouseModeActive { parts.append("鼠标模式") }
+        if model.activeLayer != 0 {
+            parts.append(layerBadgeText(model.activeLayer, frontAppName: model.frontAppNameForBadge))
+        }
+        if parts.count == 1 { parts.append(model.connected ? "已连接 · 空闲" : "遥控器未连接") }
+        return parts.joined(separator: " · ")
     }
 
     private func buildMenu() -> NSMenu {
@@ -140,15 +155,16 @@ final class FloatingBadgeController {
             .store(in: &cancellables)
     }
 
-    /// 模式态（层/鼠标/语音）常驻显示；菜单栏图标开着时只在图标关闭后兜底。
+    /// 模式态（层/鼠标/语音）常驻显示语义名（P3/P9：屏幕角落胶囊是模式可见性的主渠道，
+    /// 不再只做菜单栏图标关闭后的兜底——20px 小图标瞟一眼分不清在哪个模式）。
     private func refresh() {
         var texts: [String] = []
-        if model.activeLayer != 0 { texts.append(modeDisplayName(model.activeLayer)) }
+        if model.activeLayer != 0 {
+            texts.append(layerBadgeText(model.activeLayer, frontAppName: model.frontAppNameForBadge))
+        }
         if model.mouseModeActive { texts.append("🖱 鼠标模式") }
         if model.voiceActive { texts.append("🎙 录音中") }
-        // 图标可见时，仅语音/鼠标等瞬时强提示也不重复弹（图标已表达）——只在图标关闭时兜底
-        let shouldShow = !texts.isEmpty && !model.showStatusItem
-        if shouldShow {
+        if !texts.isEmpty {
             show(text: texts.joined(separator: " · "))
         } else {
             hide()
@@ -186,10 +202,28 @@ final class FloatingBadgeController {
             panel.setFrame(NSRect(x: f.maxX - size.width - 24, y: f.minY + 24,
                                   width: size.width, height: size.height), display: true)
         }
-        panel.orderFrontRegardless()
+        // 进入模式：淡入（已在前台则只换内容不重播动画）
+        if !panel.isVisible {
+            panel.alphaValue = 0
+            panel.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.18
+                panel.animator().alphaValue = 1
+            }
+        } else {
+            panel.orderFrontRegardless()
+        }
     }
 
     private func hide() {
-        panel?.orderOut(nil)
+        guard let panel, panel.isVisible else { return }
+        // 退出模式：淡出后收起
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            panel.animator().alphaValue = 0
+        }, completionHandler: {
+            panel.orderOut(nil)
+            panel.alphaValue = 1
+        })
     }
 }
