@@ -632,6 +632,11 @@ enum SelfTest {
         // M5-4. 键展示元数据齐备（13 键中文名/usage/徽标）
         expect(KeyDisplay.selfCheck(), "KeyDisplay 13 键元数据齐备")
 
+        // 电量特征解析：实机 GATT 0x2A19 当前上报 0x61（97%）。
+        expect(ATVVBridge.parseBatteryLevel(Data([0x61])) == 97, "Battery Level 0x61 → 97%")
+        expect(ATVVBridge.parseBatteryLevel(Data([0xFF])) == 100, "Battery Level 坏值钳到 100%")
+        expect(ATVVBridge.parseBatteryLevel(Data()) == nil, "Battery Level 空包忽略")
+
         // M5-5. 录制键名反查表：常用键可反查、别名不夺位
         expect(KeyNameLookup.canonical[36] == "return"
                && KeyNameLookup.canonical[53] == "escape"

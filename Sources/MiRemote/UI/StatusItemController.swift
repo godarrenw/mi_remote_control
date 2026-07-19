@@ -20,7 +20,10 @@ final class StatusItemController: NSObject {
         // 任一状态变化 → 重绘图标与菜单
         model.objectWillChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refresh() }
+            .sink { [weak self] _ in
+                // objectWillChange 在属性真正写入前发送；延后一拍才能读到新电量/连接状态。
+                DispatchQueue.main.async { self?.refresh() }
+            }
             .store(in: &cancellables)
         refresh()
     }
@@ -65,7 +68,11 @@ final class StatusItemController: NSObject {
         let statusText: String
         if model.connected {
             var parts = ["\(model.deviceName ?? "MI RC 2 Pro") · 已连接"]
-            if let pct = model.batteryPercent { parts.append("电量 \(pct)%") }
+            if let pct = model.batteryPercent {
+                parts.append("电量 \(pct)%")
+            } else {
+                parts.append("电量读取中")
+            }
             if model.activeLayer != 0 { parts.append(modeDisplayName(model.activeLayer)) }
             statusText = parts.joined(separator: " · ")
         } else {

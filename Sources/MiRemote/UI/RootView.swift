@@ -45,6 +45,12 @@ struct RootView: View {
                             if let pct = model.batteryPercent {
                                 Image(systemName: batterySymbol(pct)).font(.caption2).foregroundStyle(.secondary)
                                 Text("\(pct)%").font(.caption2).foregroundStyle(.secondary)
+                            } else if model.connected {
+                                ProgressView().controlSize(.mini)
+                                Text("正在读取电量…").font(.caption2).foregroundStyle(.secondary)
+                            } else {
+                                Image(systemName: "battery.0percent").font(.caption2).foregroundStyle(.tertiary)
+                                Text("电量待连接").font(.caption2).foregroundStyle(.tertiary)
                             }
                         }
                     }

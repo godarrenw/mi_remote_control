@@ -30,6 +30,13 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private(set) var batteryPercent: Int?
     /// 电量更新回调（在 ATVV 队列上触发，消费方自行切主线程）。
     var onBatteryLevel: ((Int) -> Void)?
+    private var batteryChar: CBCharacteristic?
+    private var batteryRefreshWork: DispatchWorkItem?
+
+    /// Battery Level 是一个无符号百分比；坏值钳到 100，空包忽略。
+    static func parseBatteryLevel(_ data: Data) -> Int? {
+        data.first.map { Int(min($0, 100)) }
+    }
 
     // MARK: - 命令字节
 
@@ -157,6 +164,9 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     private func resetSessionState() {
+        batteryRefreshWork?.cancel()
+        batteryRefreshWork = nil
+        batteryChar = nil
         txChar = nil
         audioChar = nil
         controlChar = nil
@@ -172,6 +182,21 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         probeBuffer.removeAll(keepingCapacity: true)
         waitingForResync = false
         accumulator = FrameAccumulator(frameSize: capsFrameLen)
+    }
+
+    /// 标准 Battery Service 支持 notify，但部分固件只在电量跨档时通知。
+    /// 首读之外每 60 秒轻量补读一次，也能覆盖首次回调/界面订阅竞态。
+    private func scheduleBatteryRefresh() {
+        batteryRefreshWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.shouldRun,
+                  let peripheral = self.peripheral,
+                  let characteristic = self.batteryChar else { return }
+            peripheral.readValue(for: characteristic)
+            self.scheduleBatteryRefresh()
+        }
+        batteryRefreshWork = work
+        queue.asyncAfter(deadline: .now() + 60, execute: work)
     }
 
     private func teardownConnection(disconnect: Bool) {
@@ -329,8 +354,12 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         // 电池服务分支：读一次 + 订阅 notify 后即返回，绝不进入下方 ATVV 特征齐备校验。
         if service.uuid == batteryServiceUUID {
             if let c = service.characteristics?.first(where: { $0.uuid == batteryLevelUUID }) {
+                batteryChar = c
                 peripheral.readValue(for: c)
-                peripheral.setNotifyValue(true, for: c)
+                if c.properties.contains(.notify) || c.properties.contains(.indicate) {
+                    peripheral.setNotifyValue(true, for: c)
+                }
+                scheduleBatteryRefresh()
                 log("BATTERY_CHAR_FOUND")
             }
             return
@@ -386,8 +415,7 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         case controlUUID: handleControl(data)
         case audioUUID:   handleAudio(data)
         case batteryLevelUUID:
-            if let b = data.first {
-                let pct = Int(min(b, 100))
+            if let pct = Self.parseBatteryLevel(data) {
                 batteryPercent = pct
                 log("BATTERY \(pct)%")
                 onBatteryLevel?(pct)
