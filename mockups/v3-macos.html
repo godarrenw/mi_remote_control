@@ -1,0 +1,952 @@
+<title>小米遥控器控制台</title>
+<style>
+  :root{
+    --sidebar-bg:#f5f5f7;
+    --sidebar-border:#d7d7db;
+    --content-bg:#ffffff;
+    --group-bg:#ffffff;
+    --group-border:#e4e4e6;
+    --hairline:#e5e5e7;
+    --text:#1d1d1f;
+    --text-secondary:#86868b;
+    --text-tertiary:#aeaeb2;
+    --accent:#0066ff;
+    --accent-pill-text:#ffffff;
+    --control-bg:#ffffff;
+    --control-border:#d1d1d6;
+    --window-bg:#ececec;
+    --titlebar-bg:#e8e8e8;
+    --titlebar-border:#d4d4d6;
+    --shadow:0 30px 70px -20px rgba(0,0,0,.35),0 10px 24px -10px rgba(0,0,0,.2);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    min-height:100vh;
+    display:flex;
+    align-items:flex-start;
+    justify-content:center;
+    padding:48px 20px;
+    background:#dcdce0;
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",Arial,sans-serif;
+    font-size:13px;
+    color:var(--text);
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---------- window chrome ---------- */
+  .window{
+    width:920px;
+    max-width:100%;
+    background:var(--content-bg);
+    border-radius:12px;
+    overflow:hidden;
+    box-shadow:var(--shadow);
+    border:1px solid rgba(0,0,0,.08);
+  }
+  .titlebar{
+    height:52px;
+    background:var(--titlebar-bg);
+    border-bottom:1px solid var(--titlebar-border);
+    display:flex;
+    align-items:center;
+    position:relative;
+    -webkit-user-select:none;
+    user-select:none;
+    flex-shrink:0;
+  }
+  .traffic-lights{
+    display:flex;
+    gap:8px;
+    padding-left:16px;
+  }
+  .traffic-lights span{
+    width:12px;height:12px;border-radius:50%;
+    display:inline-block;
+    box-shadow:inset 0 0 0 0.5px rgba(0,0,0,.12);
+  }
+  .traffic-lights .red{background:#ff5f57;}
+  .traffic-lights .yellow{background:#febc2e;}
+  .traffic-lights .green{background:#28c840;}
+  .titlebar-title{
+    position:absolute;
+    left:0;right:0;
+    text-align:center;
+    font-size:13px;
+    font-weight:600;
+    color:#3c3c3e;
+    pointer-events:none;
+  }
+
+  .window-body{
+    display:flex;
+    height:640px;
+  }
+
+  /* ---------- sidebar ---------- */
+  .sidebar{
+    width:220px;
+    flex-shrink:0;
+    background:var(--sidebar-bg);
+    border-right:1px solid var(--sidebar-border);
+    padding:14px 10px;
+    overflow-y:auto;
+  }
+  .sidebar-header{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:6px 10px 16px;
+  }
+  .app-icon{
+    width:34px;height:34px;border-radius:8px;
+    background:#1c1c1e;
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .app-icon svg{width:19px;height:19px;}
+  .sidebar-header .app-name{
+    font-size:13px;
+    font-weight:600;
+    color:var(--text);
+    line-height:1.3;
+  }
+  .sidebar-header .app-sub{
+    font-size:11px;
+    color:var(--text-secondary);
+  }
+
+  .nav-list{
+    list-style:none;
+    margin:0;padding:0;
+  }
+  .nav-item{
+    display:flex;
+    align-items:center;
+    gap:9px;
+    padding:6px 10px;
+    border-radius:7px;
+    color:#3c3c3e;
+    cursor:pointer;
+    margin-bottom:1px;
+    font-size:13px;
+  }
+  .nav-item:hover{background:rgba(0,0,0,.045);}
+  .nav-item.active{
+    background:var(--accent);
+    color:var(--accent-pill-text);
+  }
+  .nav-item .nav-icon{
+    width:20px;height:20px;
+    border-radius:5px;
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .nav-item .nav-icon svg{width:13px;height:13px;stroke:#5b5b5f;fill:none;}
+  .nav-item.active .nav-icon svg{stroke:#ffffff;}
+  .nav-icon.icon-key{background:#8e8e93;}
+  .nav-icon.icon-profile{background:#8e8e93;}
+  .nav-icon.icon-voice{background:#8e8e93;}
+  .nav-icon.icon-general{background:#8e8e93;}
+  .nav-item.active .icon-key,
+  .nav-item.active .icon-profile,
+  .nav-item.active .icon-voice,
+  .nav-item.active .icon-general{
+    background:rgba(255,255,255,.28);
+  }
+
+  /* ---------- content ---------- */
+  .content{
+    flex:1;
+    overflow-y:auto;
+    padding:26px 34px 40px;
+    background:var(--content-bg);
+  }
+  .page{display:none;}
+  .page.active{display:block;}
+
+  .page-title{
+    font-size:22px;
+    font-weight:700;
+    margin:0 0 4px;
+    color:var(--text);
+  }
+  .page-desc{
+    font-size:12px;
+    color:var(--text-secondary);
+    margin:0 0 22px;
+  }
+
+  .group-label{
+    font-size:11px;
+    font-weight:600;
+    color:var(--text-secondary);
+    text-transform:uppercase;
+    letter-spacing:.02em;
+    margin:22px 2px 6px;
+  }
+  .group-label:first-of-type{margin-top:0;}
+
+  .group{
+    background:var(--group-bg);
+    border:1px solid var(--group-border);
+    border-radius:9px;
+    overflow:hidden;
+  }
+  .row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:16px;
+    padding:9px 14px;
+    min-height:38px;
+    border-bottom:1px solid var(--hairline);
+  }
+  .row:last-child{border-bottom:none;}
+  .row-main{display:flex;align-items:center;gap:10px;min-width:0;}
+  .row-icon{
+    width:26px;height:26px;border-radius:6px;
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .row-icon svg{width:15px;height:15px;stroke:#fff;fill:none;stroke-width:1.8;}
+  .row-icon.gray{background:#8e8e93;}
+  .row-icon.blue{background:#8e8e93;}
+  .row-icon.green{background:#8e8e93;}
+  .row-icon.purple{background:#8e8e93;}
+  .row-icon.orange{background:#8e8e93;}
+  .row-icon.pink{background:#8e8e93;}
+
+  .row-text{min-width:0;}
+  .row-title{font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .row-sub{font-size:11px;color:var(--text-secondary);margin-top:1px;}
+
+  .row-control{flex-shrink:0;display:flex;align-items:center;gap:8px;}
+
+  /* toggle switch */
+  .toggle{
+    width:34px;height:20px;
+    border-radius:11px;
+    background:#e4e4e6;
+    position:relative;
+    cursor:pointer;
+    flex-shrink:0;
+    transition:background .15s;
+  }
+  .toggle.on{background:var(--accent);}
+  .toggle::after{
+    content:"";
+    position:absolute;
+    top:2px;left:2px;
+    width:16px;height:16px;
+    border-radius:50%;
+    background:#fff;
+    box-shadow:0 1px 3px rgba(0,0,0,.25);
+    transition:left .15s;
+  }
+  .toggle.on::after{left:16px;}
+
+  /* popup button (dropdown look) */
+  .popup{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    background:#f3f3f4;
+    border:1px solid var(--control-border);
+    border-radius:6px;
+    padding:4px 8px 4px 10px;
+    font-size:12px;
+    color:var(--text);
+    cursor:pointer;
+    white-space:nowrap;
+    max-width:220px;
+  }
+  .popup span{overflow:hidden;text-overflow:ellipsis;}
+  .popup .chevrons{
+    display:flex;flex-direction:column;
+    line-height:0;
+    color:#9a9a9e;
+    flex-shrink:0;
+  }
+  .popup .chevrons svg{width:9px;height:9px;display:block;}
+
+  /* macOS style radio */
+  .radio{
+    width:16px;height:16px;
+    border-radius:50%;
+    border:1.5px solid #c7c7cc;
+    background:#fff;
+    position:relative;
+    flex-shrink:0;
+  }
+  .radio.checked{
+    border-color:var(--accent);
+    background:var(--accent);
+  }
+  .radio.checked::after{
+    content:"";
+    position:absolute;
+    top:4.5px;left:4.5px;
+    width:5px;height:5px;
+    border-radius:50%;
+    background:#fff;
+  }
+
+  /* buttons */
+  .btn{
+    font-size:12px;
+    padding:5px 13px;
+    border-radius:6px;
+    border:1px solid var(--control-border);
+    background:#f6f6f7;
+    color:var(--text);
+    cursor:pointer;
+  }
+  .btn.primary{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:#fff;
+  }
+  .btn-row{display:flex;gap:8px;margin-top:14px;}
+
+  /* slider */
+  .slider-row{flex-direction:column;align-items:stretch;gap:6px;}
+  .slider-top{display:flex;justify-content:space-between;align-items:center;}
+  .slider-track{
+    height:4px;background:#e4e4e6;border-radius:2px;position:relative;margin:6px 0 2px;
+  }
+  .slider-fill{position:absolute;top:0;left:0;bottom:0;background:var(--accent);border-radius:2px;}
+  .slider-thumb{
+    position:absolute;top:50%;transform:translate(-50%,-50%);
+    width:15px;height:15px;border-radius:50%;background:#fff;
+    box-shadow:0 1px 3px rgba(0,0,0,.3),0 0 0 1px rgba(0,0,0,.06);
+  }
+
+  /* level meter */
+  .level-meter{
+    display:flex;align-items:flex-end;gap:3px;height:44px;padding:10px 14px;
+  }
+  .level-meter .bar{
+    width:5px;border-radius:2px;
+    background:#d1d1d6;
+  }
+  .level-meter .bar.mid{background:#aeaeb2;}
+  .level-meter .bar.high{background:#48484a;}
+
+  /* ============ page 1: key mapping ============ */
+  .mapping-layout{
+    display:flex;
+    gap:28px;
+    align-items:flex-start;
+  }
+  .remote-panel{
+    width:220px;
+    flex-shrink:0;
+    background:#fafafa;
+    border:1px solid var(--group-border);
+    border-radius:12px;
+    padding:20px 0 24px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+  }
+  .remote-hint{
+    font-size:11px;
+    color:var(--text-secondary);
+    margin-top:12px;
+    text-align:center;
+    padding:0 16px;
+  }
+  .editor-panel{flex:1;min-width:0;}
+  .editor-header{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:14px;
+  }
+  .editor-key-badge{
+    width:30px;height:30px;border-radius:7px;
+    background:var(--accent);
+    color:#fff;
+    display:flex;align-items:center;justify-content:center;
+    font-size:14px;font-weight:600;
+    flex-shrink:0;
+  }
+  .editor-header h3{margin:0;font-size:15px;font-weight:600;}
+  .editor-header .editor-usage{font-size:11px;color:var(--text-secondary);margin-top:2px;}
+
+  .remote-key{cursor:pointer;}
+  .remote-key .hit{fill:transparent;}
+  .remote-key .keyface{fill:#1c1c1e;stroke:transparent;stroke-width:2;transition:stroke .15s,filter .15s;}
+  .remote-key.selected .keyface{stroke:var(--accent);filter:drop-shadow(0 0 3px rgba(10,102,255,.6));}
+  .remote-key .arc{fill:none;stroke:transparent;stroke-width:2.5;stroke-linecap:round;transition:stroke .15s,filter .15s;}
+  .remote-key.selected .arc{stroke:var(--accent);filter:drop-shadow(0 0 3px rgba(10,102,255,.6));}
+  .remote-key .dot{fill:#6e6e73;transition:fill .15s,filter .15s;}
+  .remote-key.selected .dot{fill:var(--accent);filter:drop-shadow(0 0 2px rgba(10,102,255,.7));}
+
+  /* ============ page 2: profile ============ */
+  .profile-icon{
+    width:28px;height:28px;border-radius:6px;
+    display:flex;align-items:center;justify-content:center;
+    color:#fff;font-size:12px;font-weight:700;
+    flex-shrink:0;
+  }
+  .chevron-right{color:#c7c7cc;flex-shrink:0;}
+  .chevron-right svg{width:8px;height:12px;}
+
+  /* footer note */
+  .footnote{
+    font-size:11px;
+    color:var(--text-tertiary);
+    margin-top:10px;
+    padding:0 2px;
+  }
+</style>
+
+<div class="window">
+  <div class="titlebar">
+    <div class="traffic-lights"><span class="red"></span><span class="yellow"></span><span class="green"></span></div>
+    <div class="titlebar-title">小米遥控器控制台</div>
+  </div>
+
+  <div class="window-body">
+    <!-- ============ sidebar ============ -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <div class="app-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="7" y="2" width="10" height="20" rx="3"></rect>
+            <line x1="12" y1="6" x2="12" y2="6.01"></line>
+            <circle cx="12" cy="12" r="2.4"></circle>
+            <line x1="12" y1="17" x2="12" y2="17.01"></line>
+          </svg>
+        </div>
+        <div>
+          <div class="app-name">遥控器控制台</div>
+          <div class="app-sub">MI RC 2 Pro</div>
+        </div>
+      </div>
+
+      <ul class="nav-list">
+        <li class="nav-item active" data-page="mapping">
+          <span class="nav-icon icon-key">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 7a4 4 0 0 1 4 4"></path><path d="M2 21l6.5-6.5"></path><path d="M12.5 13.5L17 9a4.95 4.95 0 1 0-7-7L5.5 6.5a4.95 4.95 0 0 0 7 7z"></path></svg>
+          </span>
+          按键映射
+        </li>
+        <li class="nav-item" data-page="profile">
+          <span class="nav-icon icon-profile">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="7" y1="13" x2="12" y2="13"></line></svg>
+          </span>
+          Profile
+        </li>
+        <li class="nav-item" data-page="voice">
+          <span class="nav-icon icon-voice">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0"></path><line x1="12" y1="17" x2="12" y2="22"></line></svg>
+          </span>
+          语音
+        </li>
+        <li class="nav-item" data-page="general">
+          <span class="nav-icon icon-general">
+            <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          </span>
+          通用
+        </li>
+      </ul>
+    </nav>
+
+    <!-- ============ content ============ -->
+    <main class="content">
+
+      <!-- ============ PAGE 1: 按键映射 ============ -->
+      <section class="page active" id="page-mapping">
+        <h1 class="page-title">按键映射</h1>
+        <p class="page-desc">点击左侧遥控器上的按键，编辑该键的短按 / 长按 / 双击行为。</p>
+
+        <div class="mapping-layout">
+          <!-- remote diagram -->
+          <div class="remote-panel">
+            <svg width="180" height="480" viewBox="0 0 180 480">
+              <!-- 机身：金属银 -->
+              <rect x="6" y="6" width="168" height="448" rx="40" fill="#d7d9db" stroke="#c1c3c6" stroke-width="1"/>
+
+              <!-- 电源 -->
+              <g class="remote-key" data-key="power" onclick="selectKey('power')">
+                <circle class="hit" cx="57" cy="46" r="19"/>
+                <circle class="keyface" cx="57" cy="46" r="17"/>
+                <path d="M57 39v6M51.5 42.5a6 6 0 1 0 11 0" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+              </g>
+              <!-- 语音 -->
+              <g class="remote-key" data-key="voice" onclick="selectKey('voice')">
+                <circle class="hit" cx="123" cy="46" r="19"/>
+                <circle class="keyface" cx="123" cy="46" r="17"/>
+                <rect x="120" y="40" width="6" height="9" rx="3" fill="none" stroke="#fff" stroke-width="1.4"/>
+                <path d="M116 46a7 7 0 0 0 14 0M123 53v3" stroke="#fff" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+              </g>
+
+              <!-- 方向环大圆盘（共用底盘，不可单独点击） -->
+              <circle cx="90" cy="168" r="71" fill="#1c1c1e"/>
+
+              <!-- 上 -->
+              <g class="remote-key" data-key="up" onclick="selectKey('up')">
+                <path class="hit" d="M66.7,144.7 L39.8,117.8 A71,71 0 0 1 140.2,117.8 L113.3,144.7 A33,33 0 0 0 66.7,144.7 Z"/>
+                <path class="arc" d="M39.8,117.8 A71,71 0 0 1 140.2,117.8"/>
+                <circle class="dot" cx="90" cy="116" r="3"/>
+              </g>
+              <!-- 右 -->
+              <g class="remote-key" data-key="right" onclick="selectKey('right')">
+                <path class="hit" d="M113.3,144.7 L140.2,117.8 A71,71 0 0 1 140.2,218.2 L113.3,191.3 A33,33 0 0 0 113.3,144.7 Z"/>
+                <path class="arc" d="M140.2,117.8 A71,71 0 0 1 140.2,218.2"/>
+                <circle class="dot" cx="142" cy="168" r="3"/>
+              </g>
+              <!-- 下 -->
+              <g class="remote-key" data-key="down" onclick="selectKey('down')">
+                <path class="hit" d="M113.3,191.3 L140.2,218.2 A71,71 0 0 1 39.8,218.2 L66.7,191.3 A33,33 0 0 0 113.3,191.3 Z"/>
+                <path class="arc" d="M140.2,218.2 A71,71 0 0 1 39.8,218.2"/>
+                <circle class="dot" cx="90" cy="220" r="3"/>
+              </g>
+              <!-- 左 -->
+              <g class="remote-key" data-key="left" onclick="selectKey('left')">
+                <path class="hit" d="M66.7,191.3 L39.8,218.2 A71,71 0 0 1 39.8,117.8 L66.7,144.7 A33,33 0 0 0 66.7,191.3 Z"/>
+                <path class="arc" d="M39.8,218.2 A71,71 0 0 1 39.8,117.8"/>
+                <circle class="dot" cx="38" cy="168" r="3"/>
+              </g>
+
+              <!-- OK 中心（更深色内圆，无文字） -->
+              <g class="remote-key selected" data-key="ok" onclick="selectKey('ok')">
+                <circle class="hit" cx="90" cy="168" r="33"/>
+                <circle class="keyface" cx="90" cy="168" r="33" fill="#000000" stroke="#3a3a3c"/>
+              </g>
+
+              <!-- 返回 -->
+              <g class="remote-key" data-key="back" onclick="selectKey('back')">
+                <circle class="hit" cx="57" cy="271" r="21"/>
+                <circle class="keyface" cx="57" cy="271" r="19"/>
+                <path d="M64 271h-11m0 0l4-4m-4 4l4 4" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              </g>
+              <!-- 主页 -->
+              <g class="remote-key" data-key="home" onclick="selectKey('home')">
+                <circle class="hit" cx="57" cy="317" r="21"/>
+                <circle class="keyface" cx="57" cy="317" r="19"/>
+                <path d="M50 320l7-7 7 7v6h-14z" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
+              </g>
+              <!-- 菜单 -->
+              <g class="remote-key" data-key="menu" onclick="selectKey('menu')">
+                <circle class="hit" cx="57" cy="363" r="21"/>
+                <circle class="keyface" cx="57" cy="363" r="19"/>
+                <path d="M50 358h14M50 363h14M50 368h14" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/>
+              </g>
+
+              <!-- 音量长胶囊：上半 + / 下半 − -->
+              <g class="remote-key" data-key="vol_up" onclick="selectKey('vol_up')">
+                <path class="hit" d="M101,294 L101,274 A22,22 0 0 1 123,252 A22,22 0 0 1 145,274 L145,294 Z"/>
+                <path class="keyface" d="M101,294 L101,274 A22,22 0 0 1 123,252 A22,22 0 0 1 145,274 L145,294 Z"/>
+                <path d="M123 266v14M116 273h14" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+              </g>
+              <g class="remote-key" data-key="vol_down" onclick="selectKey('vol_down')">
+                <path class="hit" d="M101,294 L101,314 A22,22 0 0 0 123,336 A22,22 0 0 0 145,314 L145,294 Z"/>
+                <path class="keyface" d="M101,294 L101,314 A22,22 0 0 0 123,336 A22,22 0 0 0 145,314 L145,294 Z"/>
+                <path d="M116 315h14" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+              </g>
+              <line x1="103" y1="294" x2="143" y2="294" stroke="#000" stroke-opacity=".35" stroke-width="1"/>
+
+              <!-- TV -->
+              <g class="remote-key" data-key="tv" onclick="selectKey('tv')">
+                <circle class="hit" cx="123" cy="363" r="21"/>
+                <circle class="keyface" cx="123" cy="363" r="19"/>
+                <rect x="114" y="357" width="18" height="12" rx="2" fill="none" stroke="#fff" stroke-width="1.2"/>
+                <text x="123" y="366" text-anchor="middle" font-size="7" font-weight="600" fill="#fff" font-family="-apple-system,sans-serif">TV</text>
+              </g>
+
+              <!-- 底部丝印：xiaomi 字样 + NFC 标记 -->
+              <text x="90" y="430" text-anchor="middle" font-size="9" letter-spacing="0.5" fill="#96999c" font-family="-apple-system,sans-serif">xiaomi</text>
+              <rect x="136" y="421" width="13" height="13" rx="3" fill="none" stroke="#96999c" stroke-width="1"/>
+              <text x="142.5" y="430.5" text-anchor="middle" font-size="7" fill="#96999c" font-family="-apple-system,sans-serif">N</text>
+
+              <!-- 连接状态 -->
+              <circle cx="90" cy="466" r="3" fill="var(--accent)"/>
+              <text x="98" y="469" font-size="9" fill="#86868b" font-family="-apple-system,sans-serif">已连接</text>
+            </svg>
+            <p class="remote-hint">深色圆键为遥控器实体按键位置示意，选中的按键以系统蓝细描边高亮</p>
+          </div>
+
+          <!-- editor panel -->
+          <div class="editor-panel">
+            <div class="editor-header">
+              <div class="editor-key-badge">OK</div>
+              <div>
+                <h3>确认键（方向环中心）</h3>
+                <div class="editor-usage">HID usage 0x28</div>
+              </div>
+            </div>
+
+            <div class="group-label">触发方式</div>
+            <div class="group">
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-icon blue"><svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/></svg></div>
+                  <div class="row-text">
+                    <div class="row-title">短按</div>
+                    <div class="row-sub">松开时立即触发</div>
+                  </div>
+                </div>
+                <div class="row-control">
+                  <div class="popup"><span>发送按键 · Return ⏎</span><span class="chevrons"><svg viewBox="0 0 10 6"><path d="M1 5l4-4 4 4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg><svg viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg></span></div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-icon orange"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
+                  <div class="row-text">
+                    <div class="row-title">长按</div>
+                    <div class="row-sub">超过 350ms 触发</div>
+                  </div>
+                </div>
+                <div class="row-control">
+                  <div class="popup"><span>临时进入层 1</span><span class="chevrons"><svg viewBox="0 0 10 6"><path d="M1 5l4-4 4 4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg><svg viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg></span></div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-icon purple"><svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="2"/><circle cx="16" cy="12" r="2"/></svg></div>
+                  <div class="row-text">
+                    <div class="row-title">双击</div>
+                    <div class="row-sub">250ms 窗口内连按两次</div>
+                  </div>
+                </div>
+                <div class="row-control">
+                  <div class="popup"><span>无</span><span class="chevrons"><svg viewBox="0 0 10 6"><path d="M1 5l4-4 4 4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg><svg viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg></span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="group-label">手势（按住 OK + 方向键）</div>
+            <div class="group">
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-icon gray"><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></div>
+                  <div class="row-text"><div class="row-title">上</div></div>
+                </div>
+                <div class="row-control">
+                  <div class="popup"><span>调度中心</span><span class="chevrons"><svg viewBox="0 0 10 6"><path d="M1 5l4-4 4 4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg><svg viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg></span></div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-icon gray"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg></div>
+                  <div class="row-text"><div class="row-title">下</div></div>
+                </div>
+                <div class="row-control">
+                  <div class="popup"><span>窗口循环切换</span><span class="chevrons"><svg viewBox="0 0 10 6"><path d="M1 5l4-4 4 4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg><svg viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg></span></div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-icon gray"><svg viewBox="0 0 24 24"><path d="M19 12H5M12 5l-7 7 7 7"/></svg></div>
+                  <div class="row-text"><div class="row-title">左</div></div>
+                </div>
+                <div class="row-control">
+                  <div class="popup"><span>上一个标签页</span><span class="chevrons"><svg viewBox="0 0 10 6"><path d="M1 5l4-4 4 4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg><svg viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg></span></div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-icon gray"><svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+                  <div class="row-text"><div class="row-title">右</div></div>
+                </div>
+                <div class="row-control">
+                  <div class="popup"><span>下一个标签页</span><span class="chevrons"><svg viewBox="0 0 10 6"><path d="M1 5l4-4 4 4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg><svg viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="#9a9a9e" fill="none" stroke-width="1.4"/></svg></span></div>
+                </div>
+              </div>
+            </div>
+            <p class="footnote">绑定组合键可点击弹出面板中的「录制快捷键」，直接按下真实按键即可自动识别左右修饰键。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ PAGE 2: Profile ============ -->
+      <section class="page" id="page-profile">
+        <h1 class="page-title">Profile</h1>
+        <p class="page-desc">每个 App 可覆盖全局映射的一部分按键，未声明的键继承全局设置。</p>
+
+        <div class="group-label">全局</div>
+        <div class="group">
+          <div class="row">
+            <div class="row-main">
+              <div class="profile-icon" style="background:#8e8e93;">
+                <svg width="15" height="15" viewBox="0 0 24 24" stroke="#fff" stroke-width="2" fill="none"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18 9 9 0 0 1 0-18z"/></svg>
+              </div>
+              <div class="row-text">
+                <div class="row-title">全局默认（Global）</div>
+                <div class="row-sub">适用于所有未单独配置的 App</div>
+              </div>
+            </div>
+            <div class="row-control"><span class="chevron-right"><svg viewBox="0 0 8 12"><path d="M1 1l6 5-6 5" stroke="#c7c7cc" fill="none" stroke-width="1.6"/></svg></span></div>
+          </div>
+        </div>
+
+        <div class="group-label">按 App 覆盖</div>
+        <div class="group">
+          <div class="row">
+            <div class="row-main">
+              <div class="profile-icon" style="background:#1a1a1a;">Gh</div>
+              <div class="row-text">
+                <div class="row-title">Ghostty</div>
+                <div class="row-sub">继承全局 · 已覆盖 4 项（方向键、OK、返回）</div>
+              </div>
+            </div>
+            <div class="row-control"><span class="chevron-right"><svg viewBox="0 0 8 12"><path d="M1 1l6 5-6 5" stroke="#c7c7cc" fill="none" stroke-width="1.6"/></svg></span></div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="profile-icon" style="background:#48484a;">微</div>
+              <div class="row-text">
+                <div class="row-title">微信</div>
+                <div class="row-sub">继承全局 · 已覆盖 2 项（上下、OK）</div>
+              </div>
+            </div>
+            <div class="row-control"><span class="chevron-right"><svg viewBox="0 0 8 12"><path d="M1 1l6 5-6 5" stroke="#c7c7cc" fill="none" stroke-width="1.6"/></svg></span></div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="profile-icon" style="background:#6e6e73;">
+                <svg width="14" height="14" viewBox="0 0 24 24" stroke="#fff" stroke-width="2" fill="none"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+              </div>
+              <div class="row-text">
+                <div class="row-title">浏览器</div>
+                <div class="row-sub">继承全局 · 已覆盖 3 项（标签页切换）</div>
+              </div>
+            </div>
+            <div class="row-control"><span class="chevron-right"><svg viewBox="0 0 8 12"><path d="M1 1l6 5-6 5" stroke="#c7c7cc" fill="none" stroke-width="1.6"/></svg></span></div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="profile-icon" style="background:#8e8e93;">
+                <svg width="14" height="14" viewBox="0 0 24 24" stroke="#fff" stroke-width="2" fill="none"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z" fill="#fff" stroke="none"/></svg>
+              </div>
+              <div class="row-text">
+                <div class="row-title">视频播放器</div>
+                <div class="row-sub">继承全局 · 已覆盖 5 项</div>
+              </div>
+            </div>
+            <div class="row-control"><span class="chevron-right"><svg viewBox="0 0 8 12"><path d="M1 1l6 5-6 5" stroke="#c7c7cc" fill="none" stroke-width="1.6"/></svg></span></div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn primary">＋ 从运行中的 App 添加</button>
+          <button class="btn">导入预设</button>
+          <button class="btn">导出 JSON</button>
+        </div>
+      </section>
+
+      <!-- ============ PAGE 3: 语音 ============ -->
+      <section class="page" id="page-voice">
+        <h1 class="page-title">语音</h1>
+        <p class="page-desc">选择语音输入的音频来源，语音识别文字工作交给豆包输入法完成。</p>
+
+        <div class="group-label">输入模式</div>
+        <div class="group">
+          <div class="row">
+            <div class="row-main">
+              <div class="radio checked"></div>
+              <div class="row-text">
+                <div class="row-title">遥控器麦克风（主打）</div>
+                <div class="row-sub">按住语音键说话，音频经蓝牙传回并解码为 16kHz PCM</div>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="radio"></div>
+              <div class="row-text">
+                <div class="row-title">Mac 内置麦克风</div>
+                <div class="row-sub">按键仅触发豆包语音输入，用 Mac 麦克风收音</div>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="radio"></div>
+              <div class="row-text">
+                <div class="row-title">关闭</div>
+                <div class="row-sub">语音键可另行映射为普通按键</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="group-label">BlackHole 虚拟声卡</div>
+        <div class="group">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-icon green"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
+              <div class="row-text">
+                <div class="row-title">已安装 · 运行正常</div>
+                <div class="row-sub">BlackHole 2ch · /Library/Audio/Plug-Ins/HAL/</div>
+              </div>
+            </div>
+            <div class="row-control"><button class="btn">重新安装</button></div>
+          </div>
+        </div>
+
+        <div class="group-label">实时电平表</div>
+        <div class="group">
+          <div class="row" style="flex-direction:column;align-items:stretch;">
+            <div class="row-title" style="margin-bottom:2px;">按住语音键说话，可实时看到波形跳动</div>
+            <div class="level-meter">
+              <div class="bar" style="height:8px"></div>
+              <div class="bar" style="height:14px"></div>
+              <div class="bar mid" style="height:22px"></div>
+              <div class="bar mid" style="height:30px"></div>
+              <div class="bar high" style="height:38px"></div>
+              <div class="bar mid" style="height:26px"></div>
+              <div class="bar mid" style="height:18px"></div>
+              <div class="bar" style="height:24px"></div>
+              <div class="bar mid" style="height:32px"></div>
+              <div class="bar" style="height:12px"></div>
+              <div class="bar" style="height:6px"></div>
+              <div class="bar" style="height:4px"></div>
+            </div>
+          </div>
+          <div class="row slider-row">
+            <div class="slider-top">
+              <span class="row-title">输入增益</span>
+              <span class="row-sub">＋6 dB</span>
+            </div>
+            <div class="slider-track">
+              <div class="slider-fill" style="width:64%"></div>
+              <div class="slider-thumb" style="left:64%"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ PAGE 4: 通用 ============ -->
+      <section class="page" id="page-general">
+        <h1 class="page-title">通用</h1>
+        <p class="page-desc">调整触发阈值、开机行为与提示反馈。</p>
+
+        <div class="group-label">启动与显示</div>
+        <div class="group">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-icon gray"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
+              <div class="row-text"><div class="row-title">登录时启动</div></div>
+            </div>
+            <div class="row-control"><div class="toggle on" onclick="this.classList.toggle('on')"></div></div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-icon gray"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9z"/></svg></div>
+              <div class="row-text">
+                <div class="row-title">显示菜单栏图标</div>
+                <div class="row-sub">关闭后仅通过屏幕角标反馈状态</div>
+              </div>
+            </div>
+            <div class="row-control"><div class="toggle on" onclick="this.classList.toggle('on')"></div></div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-icon gray"><svg viewBox="0 0 24 24"><path d="M9 18V6l8 6-8 6z"/></svg></div>
+              <div class="row-text"><div class="row-title">层/模式切换提示音</div></div>
+            </div>
+            <div class="row-control"><div class="toggle" onclick="this.classList.toggle('on')"></div></div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-icon gray"><svg viewBox="0 0 24 24"><path d="M12 2l3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1z"/></svg></div>
+              <div class="row-text">
+                <div class="row-title">独占按键（Seize）</div>
+                <div class="row-sub">失败时自动降级为监听 + 事件抑制</div>
+              </div>
+            </div>
+            <div class="row-control"><div class="toggle on" onclick="this.classList.toggle('on')"></div></div>
+          </div>
+        </div>
+
+        <div class="group-label">触发阈值</div>
+        <div class="group">
+          <div class="row slider-row">
+            <div class="slider-top">
+              <span class="row-title">长按阈值</span>
+              <span class="row-sub">350 ms</span>
+            </div>
+            <div class="slider-track">
+              <div class="slider-fill" style="width:45%"></div>
+              <div class="slider-thumb" style="left:45%"></div>
+            </div>
+          </div>
+          <div class="row slider-row">
+            <div class="slider-top">
+              <span class="row-title">双击窗口</span>
+              <span class="row-sub">250 ms</span>
+            </div>
+            <div class="slider-track">
+              <div class="slider-fill" style="width:32%"></div>
+              <div class="slider-thumb" style="left:32%"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="group-label">关于</div>
+        <div class="group">
+          <div class="row">
+            <div class="row-main">
+              <div class="row-text">
+                <div class="row-title">版本</div>
+              </div>
+            </div>
+            <div class="row-control"><span class="row-sub">1.0.0 (M5)</span></div>
+          </div>
+          <div class="row">
+            <div class="row-main">
+              <div class="row-text"><div class="row-title">重新运行首次启动引导</div></div>
+            </div>
+            <div class="row-control"><button class="btn">打开</button></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('.nav-item').forEach(function(item){
+    item.addEventListener('click', function(){
+      document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
+      document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); });
+      item.classList.add('active');
+      document.getElementById('page-' + item.dataset.page).classList.add('active');
+    });
+  });
+
+  var keyLabels = {
+    power:{name:'电源键', usage:'HID usage 0x66'},
+    voice:{name:'语音键', usage:'键盘页 F5 (0x3E)'},
+    up:{name:'方向键 · 上', usage:'HID usage 0x52'},
+    down:{name:'方向键 · 下', usage:'HID usage 0x51'},
+    left:{name:'方向键 · 左', usage:'HID usage 0x50'},
+    right:{name:'方向键 · 右', usage:'HID usage 0x4F'},
+    ok:{name:'确认键（方向环中心）', usage:'HID usage 0x28'},
+    back:{name:'返回键', usage:'HID usage 0xF1'},
+    menu:{name:'菜单键', usage:'HID usage 0x65'},
+    home:{name:'主页键', usage:'HID usage 0x4A'},
+    tv:{name:'TV 自定义键', usage:'HID usage 0x35'},
+    vol_up:{name:'音量 ＋', usage:'HID usage 0x80'},
+    vol_down:{name:'音量 －', usage:'HID usage 0x81'}
+  };
+
+  function selectKey(key){
+    document.querySelectorAll('.remote-key').forEach(function(el){ el.classList.remove('selected'); });
+    document.querySelectorAll('[data-key="' + key + '"]').forEach(function(el){ el.classList.add('selected'); });
+    var info = keyLabels[key];
+    if(info){
+      document.querySelector('.editor-key-badge').textContent = info.name.length > 2 ? info.name.slice(0,2) : info.name;
+      document.querySelector('.editor-header h3').textContent = info.name;
+      document.querySelector('.editor-usage').textContent = info.usage;
+    }
+  }
+</script>

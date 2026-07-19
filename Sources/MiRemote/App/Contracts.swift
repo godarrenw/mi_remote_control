@@ -1,0 +1,132 @@
+import Foundation
+
+// 模块间契约。并行开发的各模块严格遵守此文件签名，不得改动。
+
+enum ATVVUUID {
+    static let service = "AB5E0001-5A21-4F05-BC7D-AF01F617B664"
+    static let tx      = "AB5E0002-5A21-4F05-BC7D-AF01F617B664" // 主机写命令
+    static let audio   = "AB5E0003-5A21-4F05-BC7D-AF01F617B664" // 音频帧 notify
+    static let control = "AB5E0004-5A21-4F05-BC7D-AF01F617B664" // 控制 notify
+}
+
+/// PCM 消费端（AudioBridge 实现；WAV 调试输出也实现它）
+protocol PCMSink: AnyObject {
+    /// 语音流开始（sampleRate 如 16000）
+    func streamStarted(sampleRate: Double)
+    /// 一批解码后的 16-bit 单声道样本
+    func write(_ samples: [Int16])
+    /// 语音流结束
+    func streamStopped()
+}
+
+// MARK: - M2 按键映射契约
+
+/// 遥控器 13 个实体键（usage 均在键盘页 0x07，2026-07-19 实机探针确认）
+enum RemoteKey: String, CaseIterable, Codable {
+    case power, voice, up, down, left, right, ok, back, home, menu, tv, volUp, volDown
+
+    static let usageMap: [UInt32: RemoteKey] = [
+        0x66: .power, 0x3E: .voice,
+        0x52: .up, 0x51: .down, 0x50: .left, 0x4F: .right, 0x28: .ok,
+        0xF1: .back, 0x4A: .home, 0x65: .menu, 0x35: .tv,
+        0x80: .volUp, 0x81: .volDown,
+    ]
+}
+
+/// 原始按键事件（HIDEngine 产出）
+struct ButtonEvent {
+    let key: RemoteKey
+    let isDown: Bool
+    let timeNs: UInt64   // DispatchTime.now().uptimeNanoseconds
+}
+
+protocol HIDEngineDelegate: AnyObject {
+    func hidLog(_ message: String)
+    func hidButton(_ event: ButtonEvent)
+    /// true=独占(seize)成功；false=降级为监听模式
+    func hidSeizeState(_ exclusive: Bool)
+}
+
+/// 动作（配置 JSON 的 Codable 模型）。type 字段区分。
+enum Action: Codable, Equatable {
+    case keyStroke(key: String, mods: [String])   // key=键名(如"return","right_arrow","k")
+    case system(String)                           // volume_up/volume_down/mute/play_pause/mission_control/launchpad/display_sleep/lock_screen
+    case openApp(String)                          // bundle id
+    case shell(String)                            // 命令行
+    case voice                                    // 语音键行为（ATVV 侧处理，映射层放行）
+    case layerMomentary(Int)
+    case layerToggle(Int)
+    case none
+
+    private enum K: String, CodingKey { case type, key, mods, value }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: K.self)
+        switch try c.decode(String.self, forKey: .type) {
+        case "key_stroke": self = .keyStroke(key: try c.decode(String.self, forKey: .key),
+                                             mods: try c.decodeIfPresent([String].self, forKey: .mods) ?? [])
+        case "system":     self = .system(try c.decode(String.self, forKey: .value))
+        case "open_app":   self = .openApp(try c.decode(String.self, forKey: .value))
+        case "shell":      self = .shell(try c.decode(String.self, forKey: .value))
+        case "voice":      self = .voice
+        case "layer_momentary": self = .layerMomentary(try c.decode(Int.self, forKey: .value))
+        case "layer_toggle":    self = .layerToggle(try c.decode(Int.self, forKey: .value))
+        default:           self = .none
+        }
+    }
+    func encode(to e: Encoder) throws {
+        var c = e.container(keyedBy: K.self)
+        switch self {
+        case .keyStroke(let k, let m): try c.encode("key_stroke", forKey: .type); try c.encode(k, forKey: .key); try c.encode(m, forKey: .mods)
+        case .system(let v):    try c.encode("system", forKey: .type); try c.encode(v, forKey: .value)
+        case .openApp(let v):   try c.encode("open_app", forKey: .type); try c.encode(v, forKey: .value)
+        case .shell(let v):     try c.encode("shell", forKey: .type); try c.encode(v, forKey: .value)
+        case .voice:            try c.encode("voice", forKey: .type)
+        case .layerMomentary(let v): try c.encode("layer_momentary", forKey: .type); try c.encode(v, forKey: .value)
+        case .layerToggle(let v):    try c.encode("layer_toggle", forKey: .type); try c.encode(v, forKey: .value)
+        case .none:             try c.encode("none", forKey: .type)
+        }
+    }
+}
+
+/// 单键绑定：五个动作位（均可省略）
+struct KeyBinding: Codable {
+    var tap: Action?
+    var hold: Action?
+    var double: Action?
+    var gesture: [String: Action]?    // "up"/"down"/"left"/"right"（仅 OK 键生效）
+    var layers: [String: Action]?     // "1" → 层1 激活时的 tap 替代
+}
+
+struct MappingConfig: Codable {
+    struct Settings: Codable {
+        var holdMs: Int = 350
+        var doubleMs: Int = 0        // 0=双击关闭（tap 零延迟）
+    }
+    var version: Int = 1
+    var settings: Settings = Settings()
+    /// profile 名 → (键名 → 绑定)；"global" 必在，其余为 bundle id 覆盖层
+    var profiles: [String: [String: KeyBinding]] = [:]
+}
+
+/// 动作执行器（ActionRunner 实现；MappingEngine 调用）
+protocol ActionRunning: AnyObject {
+    func run(_ action: Action)
+}
+
+/// 映射引擎对外事件
+protocol MappingEngineDelegate: AnyObject {
+    func mappingLog(_ message: String)
+    /// 层状态变化（0=基础层），用于状态反馈
+    func layerChanged(_ layer: Int)
+}
+
+/// ATVV 桥事件（ATVVBridge 通过它上报；main 实现）
+protocol ATVVBridgeDelegate: AnyObject {
+    func atvvLog(_ message: String)                    // 状态/调试日志
+    func atvvConnected(deviceName: String)
+    func atvvDisconnected(error: String?)
+    func atvvVoiceStarted()                            // 收到 0x04 流开始
+    func atvvVoiceStopped()                            // 收到 0x00 流结束
+    /// 一帧完整 ADPCM 数据（已按帧长切好，未解码）；sync 非 nil 表示先用它重置解码器
+    func atvvAudioFrame(_ frame: Data, sync: (predictor: Int16, stepIndex: Int)?)
+}
