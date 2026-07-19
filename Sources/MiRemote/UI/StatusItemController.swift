@@ -53,7 +53,7 @@ final class StatusItemController: NSObject {
         if model.degraded { return ("exclamationmark.triangle.fill", .systemRed, "故障") }
         if model.voiceActive { return ("mic.fill", .controlAccentColor, "语音中") }
         if model.mouseModeActive { return ("cursorarrow", .systemGreen, "鼠标模式") }
-        if model.activeLayer != 0 { return ("square.stack.3d.up.fill", .controlAccentColor, "层 \(model.activeLayer)") }
+        if model.activeLayer != 0 { return ("switch.2", .controlAccentColor, modeDisplayName(model.activeLayer)) }
         if !model.connected { return ("av.remote", nil, "未连接") }
         return ("av.remote.fill", nil, "已连接")
     }
@@ -66,7 +66,7 @@ final class StatusItemController: NSObject {
         if model.connected {
             var parts = ["\(model.deviceName ?? "MI RC 2 Pro") · 已连接"]
             if let pct = model.batteryPercent { parts.append("电量 \(pct)%") }
-            if model.activeLayer != 0 { parts.append("层 \(model.activeLayer)") }
+            if model.activeLayer != 0 { parts.append(modeDisplayName(model.activeLayer)) }
             statusText = parts.joined(separator: " · ")
         } else {
             statusText = "遥控器未连接"
@@ -136,7 +136,7 @@ final class FloatingBadgeController {
     /// 模式态（层/鼠标/语音）常驻显示；菜单栏图标开着时只在图标关闭后兜底。
     private func refresh() {
         var texts: [String] = []
-        if model.activeLayer != 0 { texts.append("层 \(model.activeLayer)") }
+        if model.activeLayer != 0 { texts.append(modeDisplayName(model.activeLayer)) }
         if model.mouseModeActive { texts.append("🖱 鼠标模式") }
         if model.voiceActive { texts.append("🎙 录音中") }
         // 图标可见时，仅语音/鼠标等瞬时强提示也不重复弹（图标已表达）——只在图标关闭时兜底

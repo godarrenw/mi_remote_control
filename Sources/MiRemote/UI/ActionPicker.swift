@@ -143,14 +143,14 @@ struct ActionPicker: View {
                 showShell = true
             }
             Button("语音输入") { onChange(.voice) }
-            Menu("临时进入层") {
+            Menu("按住进入功能模式") {
                 ForEach(1...3, id: \.self) { n in
-                    Button("层 \(n)") { onChange(.layerMomentary(n)) }
+                    Button(modeDisplayName(n)) { onChange(.layerMomentary(n)) }
                 }
             }
-            Menu("锁定/切换层") {
+            Menu("开关功能模式") {
                 ForEach(1...3, id: \.self) { n in
-                    Button("层 \(n)") { onChange(.layerToggle(n)) }
+                    Button(modeDisplayName(n)) { onChange(.layerToggle(n)) }
                 }
             }
         } label: {

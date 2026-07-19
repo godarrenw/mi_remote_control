@@ -53,6 +53,7 @@ plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
 cp .build/miremote "$APP/Contents/MacOS/miremote"
 chmod +x "$APP/Contents/MacOS/miremote"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # 默认配置（如仓库提供）；运行时缺省会在 ~/Library/Application Support/MiRemote/ 自动生成
 if [ -f "Resources/default-config.json" ]; then

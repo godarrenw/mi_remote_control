@@ -195,6 +195,7 @@ enum SelfTest {
         expect(MappingEngine.selfCheck(), "MappingEngine 状态机自测")
         expect(MappingEngine.tapRouteSelfCheck(), "M3 方向键分流快照/判定自测")
         expect(ActionRunner.selfCheck(), "ActionRunner 键表/修饰位自测")
+        expect(WorkspaceActions.selfCheck(), "WorkspaceActions 工作区动作目录自测")
 
         // M4-1. Action JSON 编解码往返（全部新旧 case）
         do {
@@ -392,6 +393,37 @@ enum SelfTest {
             expect(cfg4.profiles["global"]?["left"]?.layers?["2"] == .tabJump(dir: -1, index: nil)
                    && cfg4.profiles["global"]?["right"]?.layers?["2"] == .tabJump(dir: 1, index: nil),
                    "多 agent 层预设叠加到 layer[2]")
+        }
+
+        // Presets-4. v1 老配置只迁移一次：保留用户手势，补齐 Profile/导航入口与可用双击窗口。
+        do {
+            var legacy = MappingConfig()
+            legacy.version = 1
+            legacy.settings.doubleMs = 50
+            legacy.profiles["global"] = [
+                "menu": KeyBinding(tap: .system("display_sleep")),
+                "ok": KeyBinding(gesture: ["up": .openApp("com.example.custom")]),
+            ]
+            let migrated = migrateConfigIfNeeded(legacy)
+            expect(migrated.version == MappingConfig.currentVersion
+                   && migrated.settings.doubleMs == 300
+                   && migrated.profiles["global"]?["menu"]?.tap == .layerToggle(3),
+                   "v1 迁移版本/导航入口/双击窗口")
+            expect(migrated.profiles["global"]?["ok"]?.gesture?["up"] == .openApp("com.example.custom")
+                   && migrated.profiles["global"]?["ok"]?.gesture?["down"] == .windowCycle(scope: "app"),
+                   "v1 迁移保留用户手势并补空位")
+            expect(migrated.profiles["com.mitchellh.ghostty"] != nil
+                   && migrated.profiles["com.openai.codex"] != nil
+                   && migrated.profiles["com.google.Chrome"] != nil
+                   && migrated.profiles["com.apple.Safari"] != nil
+                   && migrated.profiles["com.anthropic.claudefordesktop"] != nil
+                   && migrated.profiles["com.tencent.xinWeChat"] != nil,
+                   "v1 迁移补齐六个高频 Profile")
+
+            var alreadyV2 = migrated
+            alreadyV2.profiles.removeValue(forKey: "com.mitchellh.ghostty")
+            expect(migrateConfigIfNeeded(alreadyV2).profiles["com.mitchellh.ghostty"] == nil,
+                   "v2 用户删除 Profile 后不再强制补回")
         }
 
         // 加固-1. Action 严格解码：未知 type 抛错（拼写错误不再伪装成 .none），显式 none 正常。

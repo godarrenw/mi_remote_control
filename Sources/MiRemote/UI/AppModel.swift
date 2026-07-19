@@ -79,12 +79,16 @@ enum KeyDisplay {
 
 enum ActionSummary {
 
-    static let systemNames: [(value: String, display: String)] = [
+    private static let baseSystemNames: [(value: String, display: String)] = [
         ("volume_up", "音量 ＋"), ("volume_down", "音量 －"), ("mute", "静音"),
         ("play_pause", "播放/暂停"), ("next", "下一曲"), ("prev", "上一曲"),
         ("mission_control", "调度中心"), ("launchpad", "启动台"), ("spotlight", "Spotlight"),
         ("display_sleep", "显示器睡眠"), ("lock_screen", "锁屏"), ("screenshot", "截图"),
     ]
+    static let systemNames: [(value: String, display: String)] = baseSystemNames
+        + WorkspaceActions.descriptors
+            .filter { !Set(baseSystemNames.map(\.value)).contains($0.action.rawValue) }
+            .map { ($0.action.rawValue, $0.title) }
     static func systemDisplay(_ v: String) -> String {
         systemNames.first(where: { $0.value == v })?.display ?? v
     }
@@ -126,8 +130,8 @@ enum ActionSummary {
             return "打开应用 · \(bundle)"
         case .shell(let cmd):           return "Shell · \(cmd.count > 24 ? String(cmd.prefix(24)) + "…" : cmd)"
         case .voice:                    return "语音输入"
-        case .layerMomentary(let n):    return "临时进入层 \(n)"
-        case .layerToggle(let n):       return "锁定/切换层 \(n)"
+        case .layerMomentary(let n):    return "按住进入\(modeDisplayName(n))"
+        case .layerToggle(let n):       return "开关\(modeDisplayName(n))"
         case .windowCycle(let scope):   return scope == "global" ? "窗口循环（全局）" : "窗口循环（同应用）"
         case .tabJump(let dir, let idx):
             if let idx { return "跳到第 \(idx) 个标签页" }
@@ -144,8 +148,17 @@ enum ActionSummary {
             && describe(.keyStroke(key: "return", mods: [])) == "发送按键 · Return ⏎"
             && describe(.keyStroke(key: "k", mods: ["right_option"])) == "发送按键 · ⌥K（右）"
             && describe(.system("mission_control")) == "调度中心"
-            && describe(.layerMomentary(1)) == "临时进入层 1"
+            && describe(.layerMomentary(1)) == "按住进入快捷控制模式"
             && describe(.tabJump(dir: -1, index: nil)) == "上一个标签页"
+    }
+}
+
+func modeDisplayName(_ number: Int) -> String {
+    switch number {
+    case 1: return "快捷控制模式"
+    case 2: return "AI 助手模式"
+    case 3: return "App 导航模式"
+    default: return "自定义模式 \(number)"
     }
 }
 
@@ -210,7 +223,13 @@ final class AppModel: ObservableObject {
         self.seizeDevice = d.bool(forKey: Prefs.seizeDevice)
         self.exitConfirm = d.bool(forKey: Prefs.exitConfirm)
         self.hasCompletedOnboarding = d.bool(forKey: Prefs.onboardingDone)
-        self.config = ConfigStore.load(from: configURL) ?? defaultConfig()
+        if let loaded = ConfigStore.load(from: configURL) {
+            let migrated = migrateConfigIfNeeded(loaded)
+            self.config = migrated
+            if migrated.version != loaded.version { _ = ConfigStore.save(migrated, to: configURL) }
+        } else {
+            self.config = defaultConfig()
+        }
 
         // 鼠标模式无回调 API，0.5s 轮询 isActive（低频，可接受）。
         mousePollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in

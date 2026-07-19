@@ -106,7 +106,7 @@ struct OnboardingWizard: View {
                 }
                 Spacer()
                 if step == 0 {
-                    if axRequestOpened || imRequestOpened {
+                    if ax != .granted || im != .granted || axRequestOpened || imRequestOpened {
                         Button("退出并重新打开") {
                             terminateApp(relaunch: true)
                         }
@@ -266,18 +266,6 @@ struct OnboardingWizard: View {
     /// 首启 sheet 期间普通 terminate 会被退出确认/模态层拦住，因此这里先同步清理
     /// BLE、音频与 hidutil，再直接结束进程。重启用独立 helper 延迟拉起同一 app。
     private func terminateApp(relaunch: Bool) {
-        model.services?.stop()
-        if relaunch, Bundle.main.bundleURL.pathExtension == "app" {
-            let helper = Process()
-            helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-            helper.arguments = ["-c", "sleep 1; /usr/bin/open \"$1\"", "miremote-relaunch",
-                                Bundle.main.bundleURL.path]
-            do {
-                try helper.run()
-            } catch {
-                log("自动重开失败，请手动重新打开 App：\(error.localizedDescription)")
-            }
-        }
-        exit(EXIT_SUCCESS)
+        relaunch ? AppLifecycle.quitAndRelaunch(model) : AppLifecycle.quit(model)
     }
 }

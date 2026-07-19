@@ -39,8 +39,18 @@ enum KeyRemapper {
         (0x51, 0x6F, 90,  .down),   // F20 (kVK_F20)
         (0x50, 0x68, 105, .left),   // F13 (kVK_F13)
         (0x4F, 0x53, 71,  .right),  // Keypad Clear (kVK_ANSI_KeypadClear)
-        // voice 键不纳入中转：语音功能走 ATVV(BLE)，与 HID 按键无关；中转只会产生无用 autorepeat 干扰。
     ]
+
+    /// 只静默、不送入 MappingEngine 的设备级映射。
+    /// 遥控器语音键同时报告键盘 F5；终端会把 F5 的 ESC[15~ 序列显示成 `~`。
+    /// 映射到 F21 usage 后 macOS 不产生键盘事件，真正的语音生命周期仍由 ATVV BLE 通道处理。
+    private static let silentTable: [(src: UInt32, dst: UInt32)] = [
+        (0x3E, 0x70), // voice/F5 → F21（macOS 无虚拟键码，静默）
+    ]
+
+    private static var mappingTable: [(src: UInt32, dst: UInt32)] {
+        table.map { ($0.src, $0.dst) } + silentTable
+    }
 
     /// 方向键 → 原生方向键 keycode（就地改写放行用）。
     static let nativeArrowKeycode: [RemoteKey: Int64] = [
@@ -137,7 +147,7 @@ enum KeyRemapper {
             log?("读取设备现有 UserKeyMapping 失败或无法解析，uninstall 时将按空映射恢复")
             return
         }
-        let ours = Set(table.map { 0x700000000 + UInt64($0.src) })
+        let ours = Set(mappingTable.map { 0x700000000 + UInt64($0.src) })
         let foreign = pairs.filter { !ours.contains($0.src) }
         savedForeign = foreign
         if !foreign.isEmpty { log?("已保存设备原有 UserKeyMapping \(foreign.count) 条，退出时恢复") }
@@ -152,7 +162,7 @@ enum KeyRemapper {
     static func install() -> Bool {
         hidutilLock.lock(); defer { hidutilLock.unlock() }
         saveExistingMappingIfNeeded()
-        var entries = table.map {
+        var entries = mappingTable.map {
             entryJSON(src: 0x700000000 + UInt64($0.src), dst: 0x700000000 + UInt64($0.dst))
         }
         entries += (savedForeign ?? []).map { entryJSON(src: $0.src, dst: $0.dst) }
@@ -177,7 +187,7 @@ enum KeyRemapper {
         hidutilLock.lock(); defer { hidutilLock.unlock() }
         let r = runHidutil(["property", "--matching", matching, "--get", "UserKeyMapping"], capture: true)
         guard r.ok, let pairs = parseUserKeyMapping(r.output) else { return .queryFailed }
-        let ours = Set(table.map { 0x700000000 + UInt64($0.src) })
+        let ours = Set(mappingTable.map { 0x700000000 + UInt64($0.src) })
         let residual = pairs.filter { ours.contains($0.src) }
         if residual.isEmpty { return .none }
         let entries = pairs.filter { !ours.contains($0.src) }
@@ -194,7 +204,7 @@ enum KeyRemapper {
         let r = runHidutil(["property", "--matching", matching, "--get", "UserKeyMapping"], capture: true)
         guard r.ok, let pairs = parseUserKeyMapping(r.output) else { return nil }
         let present = Set(pairs.map(\.src))
-        return table.allSatisfy { present.contains(0x700000000 + UInt64($0.src)) }
+        return mappingTable.allSatisfy { present.contains(0x700000000 + UInt64($0.src)) }
     }
 
     /// 恢复设备原有映射（install 前保存的值；读取/解析失败时按空映射恢复，即现状行为）。

@@ -22,6 +22,9 @@ struct HealthCheckSheet: View {
     @State private var checked = false
 
     private var problems: Int { items.filter { $0.state == .bad || $0.state == .warn }.count }
+    private var permissionsNeedRestart: Bool {
+        items.contains { ($0.id == "ax" || $0.id == "im") && $0.state != .ok }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -72,6 +75,11 @@ struct HealthCheckSheet: View {
             HStack {
                 Button("重新体检") { runChecks() }
                 Spacer()
+                if permissionsNeedRestart {
+                    Button("退出并重新打开") { AppLifecycle.quitAndRelaunch(model) }
+                        .buttonStyle(.borderedProminent)
+                        .help("授权后重启 App，让新权限进入按键通道")
+                }
                 Button("尝试自动修复") {
                     let msg = model.runHealthRepair()
                     log("体检修复: \(msg)")

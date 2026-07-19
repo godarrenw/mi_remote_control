@@ -152,11 +152,12 @@ struct KeyBinding: Codable {
 }
 
 struct MappingConfig: Codable {
+    static let currentVersion = 2
     struct Settings: Codable {
         var holdMs: Int = 350
-        var doubleMs: Int = 0        // 0=双击关闭（tap 零延迟）
+        var doubleMs: Int = 300      // 给 TV 双击切 AI 模式留出可操作窗口
     }
-    var version: Int = 1
+    var version: Int = currentVersion
     var settings: Settings = Settings()
     /// profile 名 → (键名 → 绑定)；"global" 必在，其余为 bundle id 覆盖层
     var profiles: [String: [String: KeyBinding]] = [:]

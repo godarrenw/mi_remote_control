@@ -50,7 +50,11 @@ enum ConfigStore {
 func loadOrCreateConfig(at path: String? = nil) -> MappingConfig {
     let url = path.map { URL(fileURLWithPath: $0) } ?? ConfigStore.defaultURL()
     if FileManager.default.fileExists(atPath: url.path) {
-        if let cfg = ConfigStore.load(from: url) {
+        if let loaded = ConfigStore.load(from: url) {
+            let cfg = migrateConfigIfNeeded(loaded)
+            if cfg.version != loaded.version, ConfigStore.save(cfg, to: url) {
+                log("配置已升级到 v\(cfg.version)，已补齐内置 Profile（用户已有绑定保持不变）")
+            }
             log("配置已加载: \(url.path)")
             return cfg
         }
@@ -62,6 +66,22 @@ func loadOrCreateConfig(at path: String? = nil) -> MappingConfig {
     if ConfigStore.save(cfg, to: url) {
         log("已生成默认配置: \(url.path)")
     }
+    return cfg
+}
+
+/// v1 → v2：只填空位，给既有用户补齐手势、AI 模式入口和内置 App Profile。
+/// 版本只迁移一次，因此用户日后主动删除某个 Profile 不会被下次启动重新加回来。
+func migrateConfigIfNeeded(_ input: MappingConfig) -> MappingConfig {
+    guard input.version < MappingConfig.currentVersion else { return input }
+    var cfg = input
+    if cfg.profiles["global"] == nil { cfg.profiles["global"] = [:] }
+    for preset in Presets.all { Presets.apply(preset, to: &cfg) }
+    // v2 导航交互的明确入口：菜单键点按开关导航模式。旧动作仍可在模式内重新绑定。
+    var menu = cfg.profiles["global"]?["menu"] ?? KeyBinding()
+    menu.tap = .layerToggle(3)
+    cfg.profiles["global"]?["menu"] = menu
+    if cfg.settings.doubleMs < 150 { cfg.settings.doubleMs = 300 }
+    cfg.version = MappingConfig.currentVersion
     return cfg
 }
 
@@ -78,19 +98,23 @@ func defaultConfig() -> MappingConfig {
         "left":    KeyBinding(tap: .keyStroke(key: "left_arrow", mods: [])),
         "right":   KeyBinding(tap: .keyStroke(key: "right_arrow", mods: [])),
         "ok":      KeyBinding(tap: .keyStroke(key: "return", mods: []),
-                              hold: .layerMomentary(1),
                               gesture: [
                                   "up":    .system("mission_control"),
                                   "down":  .windowCycle(scope: "app"),
                                   "left":  .keyStroke(key: "left_bracket", mods: ["left_cmd", "left_shift"]),
                                   "right": .keyStroke(key: "right_bracket", mods: ["left_cmd", "left_shift"]),
                               ]),
-        "back":    KeyBinding(tap: .keyStroke(key: "delete", mods: [])),
-        "menu":    KeyBinding(tap: .system("mission_control")),
-        "home":    KeyBinding(tap: .system("launchpad")),
+        "back":    KeyBinding(tap: .keyStroke(key: "delete", mods: []),
+                              layers: ["1": .system("previous_app")]),
+        "menu":    KeyBinding(tap: .layerToggle(3),
+                              layers: ["1": .system("next_app")]),
+        "home":    KeyBinding(tap: .system("launchpad"),
+                              layers: ["1": .system("show_desktop")]),
         // TV 双击 = 进/出 AI 批准层（层2，见 Presets.aiApprovalLayer）
         "tv":      KeyBinding(tap: .openApp("com.apple.systempreferences"),
-                              double: .layerToggle(2)),
+                              hold: .layerMomentary(1),
+                              double: .layerToggle(2),
+                              layers: ["1": .system("app_expose")]),
         "power":   KeyBinding(tap: .system("display_sleep")),
         "volUp":   KeyBinding(tap: .system("volume_up")),
         "volDown": KeyBinding(tap: .system("volume_down")),

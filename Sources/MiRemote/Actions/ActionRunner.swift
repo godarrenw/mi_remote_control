@@ -123,7 +123,9 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
             // Cmd+Shift+4 区域截图（DESIGN §3.2 system 列出截图）。
             synth(keyCode: 21, deviceBit: 0x08 | 0x02, mask: [.maskCommand, .maskShift]) // 4
         default:
-            log("unknown system action: \(name)")
+            if !WorkspaceActions.perform(named: name) {
+                log("unknown system action: \(name)")
+            }
         }
     }
 

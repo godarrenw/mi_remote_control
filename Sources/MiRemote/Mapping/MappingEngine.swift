@@ -30,13 +30,15 @@ struct TapRoute: Sendable {
 ///   `holdFired` 标记，松开时不再补发 tap。
 /// - double：`doubleMs>0` 时，`waitingDouble` 期间的第二次按下即判定双击，立即发 `double`
 ///   动作并吞掉这次按下的 tap/hold。
-/// - gesture（仅 ok 键）：ok 物理按住且其 hold 尚未触发时，若有方向键按下，发
-///   `ok.gesture[方向]`，并同时抑制本次 ok 的 tap/hold 和该方向键自身的动作。
+/// - gesture（仅 ok 键）：ok 物理按住期间若有方向键按下，发 `ok.gesture[方向]`，
+///   并同时抑制本次 ok 的 tap 和该方向键自身动作。即使已越过 hold 阈值仍可触发，
+///   符合用户“先按住、再选方向”的自然操作节奏。
 /// - layer：hold 动作为 `.layerMomentary(n)` 时，按住期间生效层 n，松开回落；`.layerToggle(n)`
 ///   点击锁定/解锁。生效层变化调 `delegate.layerChanged`。层激活时，其他键的短按优先查
 ///   `binding.layers["\(层)"]`，缺失再退回 `tap`。
 ///
-/// 绑定解析：per-app overlay 只覆盖声明的键，其余继承 global（`activeOverlay[key] ?? global[key]`）。
+/// 绑定解析：per-app overlay 按动作槽覆盖；同一键未声明的 tap/hold/double/手势/模式动作
+/// 继续继承 global，避免 App Profile 覆盖短按后意外丢掉全局手势或功能模式。
 ///
 /// 线程模型：对外方法（`setConfig`/`setActiveProfile`/`handle`）都把工作投递到同一条串行
 /// queue，所有可变状态与定时器回调都只在该 queue 上读写。定时器不用 DispatchWorkItem 取消，
@@ -246,12 +248,11 @@ final class MappingEngine: @unchecked Sendable {
     private func handleDown(_ key: RemoteKey) {
         var st = states[key] ?? KeyState()
 
-        // 1) 手势：ok 物理按住且其 hold 尚未触发时，方向键按下 → 触发 ok.gesture[方向]，
-        //    抑制 ok 的 tap/hold 与该方向键自身动作。ok.hold 已触发（如已进瞬时层）则不再算手势，
-        //    方向键按常规走层——两者由 holdFired 干净分流。
+        // 1) 手势：OK 整个物理按住期间都有效。不能把判定窗口卡在 holdMs 内，
+        //    否则用户自然地“按稳 OK 再按方向”时，手势会被长按抢走。
         if isDirection(key), let dir = gestureDirection(key) {
             let okState = states[.ok] ?? KeyState()
-            if okState.phase == .down, !okState.holdFired,
+            if okState.phase == .down,
                let gestureAction = binding(for: .ok)?.gesture?[dir] {
                 // 抑制 ok：作废其 hold 定时器 + 标记松开不产出 tap。
                 var ok = okState
@@ -425,7 +426,22 @@ final class MappingEngine: @unchecked Sendable {
     /// per-app overlay 只覆盖声明的键，其余继承 global。
     private func binding(for key: RemoteKey) -> KeyBinding? {
         let name = key.rawValue
-        return activeOverlay?[name] ?? globalProfile[name]
+        guard let overlay = activeOverlay?[name] else { return globalProfile[name] }
+        guard var merged = globalProfile[name] else { return overlay }
+        if let value = overlay.tap { merged.tap = value }
+        if let value = overlay.hold { merged.hold = value }
+        if let value = overlay.double { merged.double = value }
+        if let values = overlay.gesture {
+            var gestures = merged.gesture ?? [:]
+            for (direction, action) in values { gestures[direction] = action }
+            merged.gesture = gestures
+        }
+        if let values = overlay.layers {
+            var layers = merged.layers ?? [:]
+            for (mode, action) in values { layers[mode] = action }
+            merged.layers = layers
+        }
+        return merged
     }
 
     private func isDirection(_ k: RemoteKey) -> Bool {
@@ -499,6 +515,8 @@ extension MappingEngine {
             "up": KeyBinding(tap: .keyStroke(key: "up_arrow", mods: []),
                              double: .keyStroke(key: "page_up", mods: []),
                              layers: ["1": .keyStroke(key: "k", mods: ["right_option"])]),
+            "down": KeyBinding(tap: .keyStroke(key: "down_arrow", mods: []),
+                               layers: ["1": .keyStroke(key: "k", mods: ["right_option"])]),
             // hold=瞬时层1，gesture 上/右
             "ok": KeyBinding(tap: .keyStroke(key: "return", mods: []),
                              hold: .layerMomentary(1),
@@ -560,13 +578,12 @@ extension MappingEngine {
             expect(r.actions == [.keyStroke(key: "page_up", mods: [])], "C double only, no tap")
         }
 
-        // 场景 D：ok 长按进瞬时层1 → up 短按走层覆盖(k) → ok 松开回落层0；ok 的 return 不发。
+        // 场景 D：ok 长按进瞬时层1 → 无手势绑定的 down 走模式覆盖(k) → 松开回落。
         do {
             let (e, r, d, c) = makeEngine()
             down(e, .ok); c.advance(100)               // hold → 瞬时层1
             expect(d.layers == [1], "D layer 1 on hold")
-            down(e, .up); c.advance(10); up(e, .up)   // up 有 double → 等窗口
-            c.advance(80)                              // 层1 内发 tap
+            down(e, .down); c.advance(10); up(e, .down)
             up(e, .ok)                                 // 松开 ok → 回落
             expect(r.actions == [.keyStroke(key: "k", mods: ["right_option"])], "D layered tap = k")
             expect(d.layers == [1, 0], "D layer back to 0 on release")
@@ -583,6 +600,15 @@ extension MappingEngine {
             expect(d.layers.isEmpty, "E no layer change")
         }
 
+        // 场景 E2：用户按稳超过 holdMs 后再按方向，手势仍必须可用。
+        do {
+            let (e, r, d, c) = makeEngine()
+            down(e, .ok); c.advance(120)               // 已进入瞬时模式
+            down(e, .up); up(e, .up); up(e, .ok)
+            expect(r.actions == [.system("mission_control")], "E2 gesture remains available after hold")
+            expect(d.layers == [1, 0], "E2 mode still exits cleanly")
+        }
+
         // 场景 F：tv 长按锁定层2，再长按解锁回层0；tv 的 tap(volume_up) 从不发。
         do {
             let (e, r, d, c) = makeEngine()
@@ -590,6 +616,21 @@ extension MappingEngine {
             down(e, .tv); c.advance(100); up(e, .tv)   // toggle → 层0
             expect(d.layers == [2, 0], "F toggle layer on/off")
             expect(r.actions.isEmpty, "F no tap fired while holding")
+        }
+
+        // 场景 G：App Profile 只覆盖 OK.tap 时，仍继承 global 的 OK.gesture。
+        do {
+            var cfg = makeTestConfig()
+            cfg.profiles["com.example.app"] = ["ok": KeyBinding(tap: .keyStroke(key: "space", mods: []))]
+            let clock = ManualClock()
+            let runner = RecordingRunner()
+            let engine = MappingEngine(config: cfg, runner: runner, delegate: nil,
+                                       dispatch: { $0() },
+                                       scheduleAfter: { ms, work in clock.schedule(ms, work) })
+            engine.setActiveProfile("com.example.app")
+            down(engine, .ok); clock.advance(20); down(engine, .up)
+            up(engine, .up); up(engine, .ok)
+            expect(runner.actions == [.system("mission_control")], "G profile slot overlay inherits gesture")
         }
 
         if ok { print("[MappingEngine.selfCheck] all scenarios passed") }

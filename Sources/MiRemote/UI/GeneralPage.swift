@@ -43,7 +43,7 @@ struct GeneralPage: View {
                             .labelsHidden()
                     }
                     RowDivider()
-                    SettingsRow(icon: "speaker.wave.2", title: "层/模式切换提示音", subtitle: nil) {
+                    SettingsRow(icon: "speaker.wave.2", title: "功能模式切换提示音", subtitle: "进入或退出第二功能时播放提示") {
                         Toggle("", isOn: $model.feedbackSound).toggleStyle(.switch).labelsHidden()
                     }
                     RowDivider()

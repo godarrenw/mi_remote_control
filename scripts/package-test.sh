@@ -25,6 +25,7 @@ sed -e "s/@SHORT_VERSION@/$SHORT_VERSION-test/" \
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 cp .build/miremote "$APP/Contents/MacOS/miremote"
 chmod +x "$APP/Contents/MacOS/miremote"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 echo "-- ad-hoc 签名（仅限本轮测试）"
 codesign --force --identifier "$BUNDLE_ID" --sign - "$APP"

@@ -68,7 +68,7 @@ struct MappingPage: View {
             VStack(alignment: .leading, spacing: 16) {
                 header
                 if model.activeLayer != 0 {
-                    Label("当前层：层 \(model.activeLayer)（遥控器已进入层模式）", systemImage: "square.stack.3d.up.fill")
+                    Label("已开启：\(modeDisplayName(model.activeLayer))（同一按键现在使用第二功能）", systemImage: "switch.2")
                         .font(.caption)
                         .foregroundStyle(Color.accentColor)
                 }
@@ -197,12 +197,14 @@ struct MappingPage: View {
                 }
             }
 
-            // 分组 C：层内替代（高级，折叠）
+            // 分组 C：第二功能模式（底层仍沿用 layer 配置格式，UI 不暴露术语）
             DisclosureGroup {
-                SettingsGroup(title: "层内替代（层激活时该键短按的动作）") {
+                Text("功能模式类似遥控器的 Fn：按住 TV 使用快捷控制（切 App、桌面空间等）；双击 TV 开关 AI 助手模式（批准、拒绝、切换 agent）。")
+                    .font(.caption).foregroundStyle(.secondary).padding(.bottom, 4)
+                SettingsGroup(title: "模式开启时，这个键执行") {
                     ForEach(1...3, id: \.self) { layer in
                         if layer != 1 { RowDivider() }
-                        SettingsRow(icon: "square.stack.3d.up", iconColor: .indigo, title: "层 \(layer)") {
+                        SettingsRow(icon: "switch.2", iconColor: .blue, title: modeDisplayName(layer)) {
                             ActionPicker(action: binding.layers?["\(layer)"]) { new in
                                 model.updateBinding(for: key) { b in
                                     var l = b.layers ?? [:]
@@ -215,10 +217,10 @@ struct MappingPage: View {
                 }
                 .padding(.top, 6)
             } label: {
-                Text("高级").font(.callout)
+                Text("第二功能模式（高级）").font(.callout)
             }
 
-            Text("绑定组合键可点击弹出面板中的「录制快捷键」，直接按下真实按键即可自动识别左右修饰键。迷路时长按返回键可回到全局层。")
+            Text("绑定组合键可点击「录制快捷键」。如果不确定当前状态，可再双击 TV 键退出 AI 助手模式。")
                 .font(.system(size: 11))
                 .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
         }

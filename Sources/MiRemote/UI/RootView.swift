@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 enum SidebarItem: String, CaseIterable, Identifiable {
     case mapping, profile, voice, general
@@ -34,14 +35,9 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // 侧栏头部
                 HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color(red: 0.11, green: 0.11, blue: 0.12))
-                            .frame(width: 36, height: 36)
-                        Image(systemName: "av.remote")
-                            .foregroundStyle(.white)
-                            .font(.system(size: 16))
-                    }
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable().frame(width: 36, height: 36)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     VStack(alignment: .leading, spacing: 1) {
                         Text("遥控器控制台").font(.system(size: 13, weight: .semibold))
                         HStack(spacing: 4) {

@@ -37,7 +37,7 @@ struct ProfilePage: View {
 
                 SettingsGroup(title: "按 App 覆盖") {
                     if overlayProfiles.isEmpty {
-                        Text("暂无按 App 的覆盖层。点下方「从运行中的 App 添加」创建。")
+                        Text("暂无 App 专用按键方案。点下方按钮添加，或从预设库一键套用。")
                             .font(.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(14)
@@ -101,7 +101,7 @@ struct ProfilePage: View {
                 Image(systemName: "trash").foregroundStyle(.secondary).font(.caption)
             }
             .buttonStyle(.plain)
-            .help("删除该覆盖层")
+            .help("删除该 App 专用方案")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -131,11 +131,11 @@ struct ProfilePage: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let imported = try JSONDecoder().decode(MappingConfig.self, from: Data(contentsOf: url))
-            guard imported.version == 1 else {
+            guard (1...MappingConfig.currentVersion).contains(imported.version) else {
                 throw NSError(domain: "MiRemote", code: 1,
-                              userInfo: [NSLocalizedDescriptionKey: "不支持配置版本 \(imported.version)，当前仅支持版本 1"])
+                              userInfo: [NSLocalizedDescriptionKey: "不支持配置版本 \(imported.version)，当前最高支持版本 \(MappingConfig.currentVersion)"])
             }
-            model.config = imported
+            model.config = migrateConfigIfNeeded(imported)
             if model.config.profiles["global"] == nil { model.config.profiles["global"] = [:] }
             model.currentProfile = "global"
             model.saveConfig()
@@ -180,7 +180,7 @@ struct AddRunningAppSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("选择要添加覆盖层的 App").font(.headline)
+            Text("选择要添加专用按键方案的 App").font(.headline)
             List(apps, id: \.processIdentifier) { app in
                 Button {
                     guard let bundle = app.bundleIdentifier else { return }
@@ -260,7 +260,7 @@ struct PresetLibrarySheet: View {
                         Text("建议应用到：\(profileDisplayName(bundle))")
                             .font(.caption2).foregroundStyle(.secondary)
                     } else {
-                        Text("层绑定 · 并入全局").font(.caption2).foregroundStyle(.secondary)
+                        Text("功能模式 · 适用于所有 App").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 Spacer()
@@ -337,7 +337,7 @@ struct PresetLibrarySheet: View {
             add("手势·\(dir)", act, current?.gesture?[dir])
         }
         for (layer, act) in (preset.layers ?? [:]).sorted(by: { $0.key < $1.key }) {
-            add("层\(layer)", act, current?.layers?[layer])
+            add(modeDisplayName(Int(layer) ?? 0), act, current?.layers?[layer])
         }
         return rows
     }
