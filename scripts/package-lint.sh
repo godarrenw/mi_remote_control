@@ -84,6 +84,46 @@ else
     fail "找不到 dist/MiRemote-*.zip"
 fi
 
+# 5b. DMG 打包验证：make-dmg 产物可挂载、内容齐全、卷内 app 签名有效
+if [ "${SKIP_DMG:-0}" = "1" ]; then
+    note "跳过 DMG 验证 (SKIP_DMG=1)"
+else
+    echo "-- DMG：make-dmg.sh + 挂载校验 ..."
+    if ./scripts/make-dmg.sh >/dev/null 2>&1; then
+        pass "make-dmg.sh 生成 DMG"
+    else
+        fail "make-dmg.sh 失败（正式流程需已签名 app）"
+    fi
+    DMG="$(ls -t dist/MiRemote-*.dmg 2>/dev/null | grep -v -- '-unsigned' | head -1 || true)"
+    if [ -z "$DMG" ]; then
+        fail "找不到 dist/MiRemote-*.dmg"
+    else
+        note "$DMG"
+        if hdiutil verify "$DMG" >/dev/null 2>&1; then
+            pass "hdiutil verify 校验和有效"
+        else
+            fail "hdiutil verify 校验和无效"
+        fi
+        INFO="$(hdiutil attach "$DMG" -nobrowse -readonly 2>/dev/null || true)"
+        MNT="$(echo "$INFO" | grep -o '/Volumes/.*' | head -1)"
+        if [ -n "$MNT" ] && [ -d "$MNT" ]; then
+            pass "DMG 可挂载 ($MNT)"
+            [ -d "$MNT/MiRemote.app" ] && pass "卷内含 MiRemote.app" || fail "卷内缺 MiRemote.app"
+            [ "$(readlink "$MNT/Applications" 2>/dev/null)" = "/Applications" ] \
+                && pass "卷内含 /Applications 软链" || fail "卷内缺 /Applications 软链"
+            [ -f "$MNT/README.txt" ] && pass "卷内含 README.txt" || fail "卷内缺 README.txt"
+            if codesign --verify --strict "$MNT/MiRemote.app" 2>/dev/null; then
+                pass "卷内 app 签名有效"
+            else
+                fail "卷内 app 签名无效"
+            fi
+            hdiutil detach "$MNT" >/dev/null 2>&1 || hdiutil detach "$MNT" -force >/dev/null 2>&1 || true
+        else
+            fail "DMG 挂载失败"
+        fi
+    fi
+fi
+
 # 6. DR 一致性：重编译+重签名后 DR 必须逐字不变
 if [ "${SKIP_DR_CONSISTENCY:-0}" = "1" ]; then
     note "跳过 DR 一致性检查 (SKIP_DR_CONSISTENCY=1)"

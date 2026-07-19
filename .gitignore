@@ -1,5 +1,12 @@
+# build & distribution artifacts
 .build/
+dist/
+*.dmg
+
+# audio debug captures
+*.wav
+
+# tooling / editor
 .omc/
 .claude/worktrees/
-dist/
 .DS_Store
