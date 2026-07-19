@@ -15,4 +15,18 @@ jobs:
       - name: 构建
         run: ./build.sh
       - name: 自检
-        run: .build/miremote --self-test
+        # FAIL 行转成 ::error 注解：Actions 日志需登录才能看，注解走公开 API 可匿名读，
+        # 便于在无 gh 登录的环境远程诊断 CI 失败。
+        run: |
+          set +e
+          .build/miremote --self-test 2>&1 | tee selftest.log
+          code=${PIPESTATUS[0]}
+          grep '^FAIL' selftest.log | head -10 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          if [ "${code}" != "0" ] && ! grep -q '^FAIL' selftest.log; then
+            echo "::error::self-test 异常退出 code=${code}，无 FAIL 行（可能是崩溃/信号），尾部输出："
+            tail -5 selftest.log | while IFS= read -r line; do echo "::error::tail: ${line}"; done
+          fi
+          exit "${code}"
+        shell: bash

@@ -869,8 +869,10 @@ enum SelfTest {
             s = KeyMapperApp.mruPush(s, "b")
             expect(s == ["b", "c", "a"], "MRU 重复项上浮去重", "\(s)")
             s = KeyMapperApp.mruPush(s, "d")
-            expect(s == ["d", "b", "c"], "MRU 容量截断到 3", "\(s)")
-            expect(KeyMapperApp.mruBackTarget(s, current: "d") == "b", "MRU 回切=第一个非当前项")
+            expect(s == ["d", "b", "c", "a"], "MRU 容量 5 内不截断", "\(s)")
+            s = KeyMapperApp.mruPush(s, "e"); s = KeyMapperApp.mruPush(s, "f")
+            expect(s == ["f", "e", "d", "b", "c"], "MRU 容量截断到 5", "\(s)")
+            expect(KeyMapperApp.mruBackTarget(s, current: "f") == "e", "MRU 回切=第一个非当前项")
             expect(KeyMapperApp.mruBackTarget(["d"], current: "d") == nil, "MRU 只有当前项时无目标")
             expect(KeyMapperApp.mruBackTarget([], current: nil) == nil, "MRU 空栈无目标")
         }
