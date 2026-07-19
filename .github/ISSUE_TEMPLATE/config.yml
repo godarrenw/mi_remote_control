@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 提问与讨论
+    url: https://github.com/godarrenw/mi_remote_control/discussions
+    about: 使用问题、想法交流、求助请走 Discussions；Issue 仅用于可复现的 Bug 与明确的功能建议。
+  - name: 🔐 安全问题
+    url: https://github.com/godarrenw/mi_remote_control/security/advisories/new
+    about: 涉及权限、隐私或安全的问题请私下报告，不要开公开 Issue（见 SECURITY.md）。

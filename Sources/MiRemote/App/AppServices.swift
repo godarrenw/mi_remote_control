@@ -336,7 +336,7 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
     /// 主线程维护（NSWorkspace 通知在主线程投递）；App 轮盘 UI 直接读，
     /// `app_mru_back` 动作经主线程走 activateMRUBack()。
     private(set) var mruExternalApplications: [NSRunningApplication] = []
-    private static let mruCapacity = 3
+    private static let mruCapacity = 5   // App 轮盘容量（五大 App 目标，DESIGN §3.1b）
 
     /// MRU 压栈纯逻辑（自测覆盖）：去重后插到栈顶，截断到 cap。
     static func mruPush(_ stack: [String], _ id: String, cap: Int = mruCapacity) -> [String] {

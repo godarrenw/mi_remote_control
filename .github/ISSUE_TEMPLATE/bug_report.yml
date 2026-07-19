@@ -1,0 +1,88 @@
+name: 🐞 Bug 报告
+description: 报告一个可复现的问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。这个项目大量行为只能在真机上复现，请尽量附上你的遥控器型号、macOS 版本与实机现象。
+        提交前请先搜索是否已有相同 Issue。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题现象
+      description: 发生了什么？你期望发生什么？
+      placeholder: 例如：按住语音键说话后没有出字，菜单栏图标没有变红。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 一步步写清如何复现
+      placeholder: |
+        1. 启动 MiRemote，授予三项权限
+        2. 打开豆包输入法，麦克风选 BlackHole 2ch
+        3. 按住语音键说「你好」
+        4. 观察到 ...
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS 版本
+      placeholder: 例如 15.5 / 26.0
+    validations:
+      required: true
+
+  - type: input
+    id: remote
+    attributes:
+      label: 遥控器型号
+      placeholder: 例如 小米蓝牙遥控器 2 Pro
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: MiRemote 版本
+      description: 菜单栏「关于」里可见，或从源码构建时的 git commit
+      placeholder: 例如 v0.1.0 / 源码构建 dddb047
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: 安装方式
+      options:
+        - Release 里的 DMG / zip（未公证包）
+        - 自己从源码构建
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 自检输出
+      description: |
+        尽量附上 `.build/miremote --self-test` 与 `.build/miremote --doctor` 的输出；
+        复现时可用 `.build/miremote --verbose --keys` 或 `--doubao` 抓日志。此栏会自动按代码块渲染。
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索过现有 Issue，没有重复
+          required: true
+        - label: 我没有同时运行官方「小米遥控器助手」（会抢占设备）
+          required: false
+        - label: 我已跑过 `--doctor` 且已按提示处理权限 / BlackHole 问题
+          required: false

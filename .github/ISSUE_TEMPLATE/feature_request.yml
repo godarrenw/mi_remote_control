@@ -1,0 +1,42 @@
+name: 💡 功能建议
+description: 提议一个新功能或改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎点子。请先说明你要解决的**场景与痛点**，再提具体方案——好的场景描述比现成方案更有价值。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 描述遇到的场景和痛点。是躺着操作不顺手？某个 App 缺映射？语音链路某步卡壳？
+      placeholder: 例如：在看视频时想用一个键切换字幕，但目前没有对应动作类型。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议的方案
+      description: 你设想它怎么工作？涉及哪个键 / 哪个触发位（tap / hold / double / 层 / 手势）？
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 其他考虑过的做法
+      description: 现有配置 / 预设能否绕过？为什么不够？
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索过现有 Issue 与 DESIGN.md，没有重复或已规划
+          required: true
