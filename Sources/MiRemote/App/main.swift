@@ -4,6 +4,12 @@ import AppKit
 // M1 CLI：遥控器语音 → ATVV → ADPCM 解码 → BlackHole/WAV
 // 用法: miremote [--list-audio-devices] [--output <设备名>] [--wav <路径>] [--gain <dB>] [--verbose]
 
+// 单实例锁：最早执行，防双开（两份 hidutil/tap 互踩状态）。flock 随进程退出（含 kill -9）自动释放。
+if !HealthMonitor.acquireSingleInstanceLock() {
+    print("已有实例在运行（锁文件 \(HealthMonitor.lockFilePath())），本次启动退出。")
+    exit(1)
+}
+
 func ts() -> String {
     let f = DateFormatter()
     f.dateFormat = "HH:mm:ss.SSS"
@@ -28,6 +34,23 @@ while let a = args.first {
         exit(0)
     case "--self-test":
         exit(SelfTest.run())
+    case "--doctor":
+        // 一键体检与修复（standalone：只读检查 + 异常退出残留清理，不安装新映射）。
+        // M5 的「错误维修」按钮后续调同一 HealthMonitor.runRepair API。
+        let report = HealthMonitor.runRepair()
+        print("MiRemote 一键体检")
+        report.lines().forEach { print($0) }
+        print(report.needsUser ? "—— 存在需要你处理的项，请按上面的指引操作后重跑 --doctor。"
+                               : "—— 全部检查通过。")
+        exit(report.exitCode)
+    case "--login-item":
+        guard !args.isEmpty, let cmd = LoginItemCommand(rawValue: args.removeFirst()) else {
+            FileHandle.standardError.write("--login-item 需要参数 on|off|status\n".data(using: .utf8)!)
+            exit(2)
+        }
+        let r = LoginItem.run(cmd)
+        print(r.message)
+        exit(r.code)
     case "--output":  outputName = args.isEmpty ? nil : args.removeFirst()
     case "--wav":     wavPath = args.isEmpty ? nil : args.removeFirst()
     case "--gain":    gainDB = Double(args.isEmpty ? "0" : args.removeFirst()) ?? 0
@@ -66,6 +89,7 @@ while let a = args.first {
     case "--help", "-h":
         print("miremote [--list-audio-devices] [--output <name>] [--wav <path>] [--gain <dB>] [--verbose]")
         print("         [--keys] [--config <path>] [--doubao] [--run-action '<action json>']")
+        print("         [--doctor] [--login-item on|off|status]")
         exit(0)
     default:
         FileHandle.standardError.write("未知参数: \(a)\n".data(using: .utf8)!)
@@ -101,13 +125,18 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         if verbose { log(message) }
     }
 
+    /// BLE 连接态回调（健康监控接线；nil 时无副作用）。
+    var onConnection: ((Bool) -> Void)?
+
     func atvvConnected(deviceName: String) {
         log("已连接: \(deviceName)")
         print("READY")
+        onConnection?(true)
     }
 
     func atvvDisconnected(error: String?) {
         log("断开连接\(error.map { ": \($0)" } ?? "")（自动重连中）")
+        onConnection?(false)
     }
 
     func atvvVoiceStarted() {
@@ -182,8 +211,12 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
         if verbose { log("KEY \(event.key.rawValue) \(event.isDown ? "↓" : "↑")") }
         engine.handle(event)
     }
+    /// tap 存活态回调（健康监控接线；TapEngine 的健康检查/失效安全路径都会经过 hidSeizeState）。
+    var onSeizeState: ((Bool) -> Void)?
+
     func hidSeizeState(_ exclusive: Bool) {
         log(exclusive ? "按键已独占接管" : "按键降级为监听模式（系统仍会响应原始按键）")
+        onSeizeState?(exclusive)
     }
     func mappingLog(_ message: String) { if verbose { log("MAP \(message)") } }
     func layerChanged(_ layer: Int) { log("层 → \(layer)") }
@@ -260,7 +293,21 @@ func defaultConfig() -> MappingConfig {
     return cfg
 }
 
+// 异常退出残留自修复：安装映射前检查设备上是否残留本程序中转条目（kill -9 等来不及恢复）。
+KeyRemapper.log = { log("HIDUTIL \($0)") }   // install/uninstall/清残留失败可见，不静默
+switch KeyRemapper.cleanResidualMapping() {
+case .cleaned(let n): log("检测到上次异常退出残留（\(n) 条 hidutil 中转映射），已清理")
+case .cleanFailed:    log("检测到上次异常退出残留，但清理失败（中转键可能泄漏，可运行 --doctor 重试）")
+case .none, .queryFailed: break   // queryFailed 含遥控器不在场，正常
+}
+
+// 健康状态机：四源汇聚（BLE 连接态 / tap 存活 / hidutil 映射在位 / 权限周期检查）。
+let health = HealthMonitor()
+health.log = { log("健康 \($0)") }
+health.onChange = { st in log("健康状态 → \(HealthMonitor.describe(st))") }   // M5 菜单栏图标变色接这里
+
 let app = VoiceBridgeApp(outputName: outputName, wavPath: wavPath, gainDB: gainDB, verbose: verbose, switchInput: switchInputFlag, doubao: doubaoFlag)
+app.onConnection = { health.setBLEConnected($0) }
 let bridge = ATVVBridge(delegate: app)
 
 /// IOHID 监听通道的过滤器：只放行"系统天然忽略"的键（如 back 0xF1），
@@ -291,7 +338,10 @@ if keysFlag {
     tapEngine = tap
     hidFilter = filter
     hidEngine = hid
-    KeyRemapper.log = { log("HIDUTIL \($0)") }   // install/uninstall 失败可见，不静默
+    // 健康监控接线：tap 存活喂状态机；周期检查发现映射缺失时委托 TapEngine 幂等重装。
+    health.setKeysEnabled(true)
+    km.onSeizeState = { health.setTapAlive($0) }
+    health.reinstallMapping = { tap.reinstallMapping(reason: "周期健康检查发现映射缺失") }
     // 映射生命周期：蓝牙重连后设备服务重建，hidutil 映射可能失效 → 幂等重装；
     // 设备移除 / 系统睡眠可能丢 keyUp → 复位引擎与 tap 的按压状态。
     hid.onDeviceMatched = { tap.reinstallMapping(reason: "设备重连") }
@@ -312,10 +362,13 @@ if keysFlag {
     log("按键映射已启用（hidutil 中转 + CGEventTap + IOHID 监听兜底）")
 }
 
+health.startPeriodicChecks()   // 权限 60s 周期查询 + 映射在位校验（被撤时日志+状态回调）
+
 signal(SIGINT, SIG_IGN)
 let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 sigint.setEventHandler {
     log("退出中…")
+    health.stop()
     bridge.stop()
     tapEngine?.stop() // 恢复 hidutil 映射
     exit(0)

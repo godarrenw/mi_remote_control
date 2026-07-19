@@ -162,6 +162,41 @@ enum KeyRemapper {
         return ok
     }
 
+    // MARK: - 稳定性专项消费接口（HealthMonitor 用：只读查询 + 异常退出残留清理）
+
+    enum ResidueCleanResult: Equatable {
+        case none            // 无本程序残留条目
+        case cleaned(Int)    // 清理了 n 条残留（第三方条目原样保留）
+        case queryFailed     // --get 失败或输出无法解析（遥控器不在场也走这里）
+        case cleanFailed     // 有残留但 --set 回写失败
+    }
+
+    /// 启动时（安装映射前）/ --doctor 用：清除上次异常退出遗留的本程序中转条目，
+    /// 保留第三方条目。映射在用时（tap 运行中）不要调用——在用映射不是残留。
+    static func cleanResidualMapping() -> ResidueCleanResult {
+        hidutilLock.lock(); defer { hidutilLock.unlock() }
+        let r = runHidutil(["property", "--matching", matching, "--get", "UserKeyMapping"], capture: true)
+        guard r.ok, let pairs = parseUserKeyMapping(r.output) else { return .queryFailed }
+        let ours = Set(table.map { 0x700000000 + UInt64($0.src) })
+        let residual = pairs.filter { ours.contains($0.src) }
+        if residual.isEmpty { return .none }
+        let entries = pairs.filter { !ours.contains($0.src) }
+            .map { entryJSON(src: $0.src, dst: $0.dst) }
+        let ok = runHidutil(["property", "--matching", matching,
+                             "--set", #"{"UserKeyMapping":[\#(entries.joined(separator: ","))]}"#]).ok
+        return ok ? .cleaned(residual.count) : .cleanFailed
+    }
+
+    /// 只读查询：本程序全部中转条目是否在位（nil = 查询/解析失败）。
+    /// HealthMonitor 周期校验用，判据与 reinstall 相同（缺任何一条即缺失）。
+    static func mappingPresent() -> Bool? {
+        hidutilLock.lock(); defer { hidutilLock.unlock() }
+        let r = runHidutil(["property", "--matching", matching, "--get", "UserKeyMapping"], capture: true)
+        guard r.ok, let pairs = parseUserKeyMapping(r.output) else { return nil }
+        let present = Set(pairs.map(\.src))
+        return table.allSatisfy { present.contains(0x700000000 + UInt64($0.src)) }
+    }
+
     /// 恢复设备原有映射（install 前保存的值；读取/解析失败时按空映射恢复，即现状行为）。
     @discardableResult
     static func uninstall() -> Bool {

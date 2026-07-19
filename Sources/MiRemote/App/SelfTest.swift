@@ -468,6 +468,81 @@ enum SelfTest {
                    "EnvCheck 遥控器枚举可调用+蓝牙面板URL", stateTag(rc.state))
         }
 
+        // 稳定性-1. HealthMonitor.computeOverall 四源汇聚纯逻辑
+        do {
+            var s = HealthSources(keysEnabled: true, bleConnected: true, tapAlive: true,
+                                  mappingInstalled: true, accessibilityGranted: true,
+                                  inputMonitoringGranted: true)
+            expect(HealthMonitor.computeOverall(s) == .healthy, "健康态：四源全好 → healthy")
+            s.bleConnected = false
+            if case .degraded(let why) = HealthMonitor.computeOverall(s) {
+                expect(why.count == 1 && why[0].contains("蓝牙"), "健康态：BLE 断开 → degraded(蓝牙)", "\(why)")
+            } else { expect(false, "健康态：BLE 断开 → degraded") }
+            s.tapAlive = false
+            if case .broken(let why) = HealthMonitor.computeOverall(s) {
+                expect(why.contains(where: { $0.contains("CGEventTap") }), "健康态：tap 失效 → broken", "\(why)")
+            } else { expect(false, "健康态：tap 失效 → broken") }
+            s = HealthSources(keysEnabled: false, bleConnected: true, tapAlive: false,
+                              mappingInstalled: false, accessibilityGranted: true,
+                              inputMonitoringGranted: true)
+            expect(HealthMonitor.computeOverall(s) == .healthy, "健康态：未启用按键模式时 tap/映射不参与判定")
+            s.accessibilityGranted = false
+            if case .broken = HealthMonitor.computeOverall(s) {
+                expect(true, "健康态：辅助功能撤权 → broken")
+            } else { expect(false, "健康态：辅助功能撤权 → broken") }
+            s = HealthSources(keysEnabled: true, bleConnected: true, tapAlive: true,
+                              mappingInstalled: false, accessibilityGranted: true,
+                              inputMonitoringGranted: true)
+            if case .degraded(let why) = HealthMonitor.computeOverall(s) {
+                expect(why.contains(where: { $0.contains("中转映射") }), "健康态：映射缺失 → degraded(映射)", "\(why)")
+            } else { expect(false, "健康态：映射缺失 → degraded") }
+        }
+
+        // 稳定性-2. 单实例锁：路径生成 + flock 独占互斥（同进程二次 open 也拿不到）
+        do {
+            expect(HealthMonitor.lockFilePath().hasSuffix("MiRemote/miremote.lock"),
+                   "锁文件路径生成", HealthMonitor.lockFilePath())
+            let tmp = NSTemporaryDirectory() + "miremote-selftest-\(getpid()).lock"
+            defer { unlink(tmp) }
+            let fd1 = HealthMonitor.tryLock(path: tmp)
+            expect(fd1 != nil, "首次加锁成功")
+            expect(HealthMonitor.tryLock(path: tmp) == nil, "锁被持有时二次加锁失败（独占非阻塞）")
+            if let fd1 { flock(fd1, LOCK_UN); close(fd1) }
+            let fd2 = HealthMonitor.tryLock(path: tmp)
+            expect(fd2 != nil, "释放后可重新加锁")
+            if let fd2 { flock(fd2, LOCK_UN); close(fd2) }
+        }
+
+        // 稳定性-3. --login-item 参数解析三态 + 非法值
+        do {
+            expect(LoginItemCommand(rawValue: "on") == .on
+                   && LoginItemCommand(rawValue: "off") == .off
+                   && LoginItemCommand(rawValue: "status") == .status, "--login-item 三态解析")
+            expect(LoginItemCommand(rawValue: "enable") == nil
+                   && LoginItemCommand(rawValue: "") == nil, "--login-item 非法值拒绝")
+        }
+
+        // 稳定性-4. RepairReport 结构与文案纯逻辑（needsUser/exitCode/lines）
+        do {
+            let allOK = RepairReport(items: [
+                RepairItem(name: "甲", status: .ok, message: "已就绪", guideURL: nil),
+                RepairItem(name: "乙", status: .repaired, message: "已清理", guideURL: nil),
+                RepairItem(name: "丙", status: .info, message: "仅提示", guideURL: nil),
+            ])
+            expect(!allOK.needsUser && allOK.exitCode == 0, "RepairReport 全好/已修/提示 → 退出码 0")
+            let bad = RepairReport(items: [
+                RepairItem(name: "权限", status: .needsUser, message: "去系统设置勾选",
+                           guideURL: URL(string: "x-apple.systempreferences:com.apple.preference.security")),
+            ])
+            expect(bad.needsUser && bad.exitCode == 1, "RepairReport 有需处理项 → 退出码 1")
+            let lines = bad.lines()
+            expect(lines.count == 1 && lines[0].contains("[需处理]") && lines[0].contains("权限")
+                   && lines[0].contains("去系统设置勾选") && lines[0].contains("x-apple.systempreferences"),
+                   "RepairReport 文案含标记/名称/指引/URL", lines.first ?? "")
+            expect(allOK.lines().allSatisfy { !$0.contains("http") },
+                   "非需处理项不拼接 guideURL")
+        }
+
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")
         return failures == 0 ? 0 : 1
     }

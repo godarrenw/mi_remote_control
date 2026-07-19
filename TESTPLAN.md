@@ -697,6 +697,63 @@ hidutil property --matching '{"VendorID":0x2717,"ProductID":0x32B8}' --get "User
 
 ---
 
+## 稳定性 · 故障注入清单（单实例锁 / 残留自修复 / 健康状态机 / --doctor）
+
+> 对应稳定性专项（HealthMonitor）。每条：注入方法（命令）→ 预期行为 → 预期日志。前置：`./build.sh` 全绿、遥控器已配对、权限已授。
+
+- [ ] **FI-01** 〔集成〕 双开（单实例锁）
+  - 注入：终端 A 运行 `.build/miremote --keys --verbose`；终端 B 再运行同一命令（或 `--doctor`）。
+  - 预期行为：终端 B 立即退出，退出码 1；终端 A 不受任何影响。
+  - 预期日志：终端 B 打印 `已有实例在运行（锁文件 ~/Library/Application Support/MiRemote/miremote.lock）`。
+
+- [ ] **FI-02** 〔实机〕 kill -9 异常退出残留自修复
+  - 注入：`.build/miremote --keys` 运行中执行 `kill -9 <pid>`；用 `hidutil property --matching '{"VendorID":0x2717,"ProductID":0x32B8}' --get UserKeyMapping` 确认中转条目残留在设备上；再重启程序。
+  - 预期行为：重启后残留被清（随后 `--keys` 正常安装新映射）；期间真键盘不受影响。
+  - 预期日志：`检测到上次异常退出残留（9 条 hidutil 中转映射），已清理`（安装映射前打印）。
+
+- [ ] **FI-03** 〔实机〕 蓝牙关开（映射重装 + BLE 重连）
+  - 注入：运行中在控制中心关闭蓝牙，等 5 秒再打开。
+  - 预期行为：关闭后语音不可用、健康态降级；重开后自动重连，映射幂等重装，语音/按键全恢复。
+  - 预期日志：`断开连接…（自动重连中）` → `健康状态 → 部分受损：遥控器蓝牙未连接…` → `已连接:` → `hidutil 映射已重装（设备重连）` → `健康状态 → 健康`。
+
+- [ ] **FI-04** 〔实机〕 睡眠唤醒
+  - 注入：运行中 `pmset sleepnow`，10 秒后唤醒。
+  - 预期行为：唤醒后映射重装、按压状态复位（无卡键），全键位与语音正常。
+  - 预期日志：睡眠时 `resetInputState（系统睡眠）` 相关日志；唤醒后 `hidutil 映射已重装（系统唤醒）`。
+
+- [ ] **FI-05** 〔实机〕 撤辅助功能再授权（tap 恢复）
+  - 注入：运行中在 系统设置 → 隐私与安全性 → 辅助功能 取消勾选 miremote；60 秒后重新勾选。
+  - 预期行为：撤权后 ≤30s tap 失效被检出并卸载 hidutil 映射（绝不留「映射在、过滤器不在」的泄漏态）；健康态 broken；重新授权后 ≤30s tap 自动恢复并重装映射，健康态回 healthy。
+  - 预期日志：`健康检查：TAP 无法恢复，已卸载 hidutil 映射防止中转键泄漏` + `健康状态 → 故障：…CGEventTap…`；恢复后 `健康检查：TAP 已恢复，hidutil 映射已重装` + `健康状态 → 健康`。
+
+- [ ] **FI-06** 〔实机〕 撤输入监控
+  - 注入：运行中在 系统设置 → 隐私与安全性 → 输入监控 取消勾选 miremote。
+  - 预期行为：≤60s 周期检查检出，健康态降级（返回键 0xF1 通道受影响，中转键仍工作）；不崩溃。
+  - 预期日志：`健康状态 → 部分受损：…输入监控权限未授予（返回键不可用）`。
+
+- [ ] **FI-07** 〔实机〕 映射被外部清掉（模拟第三方覆写）
+  - 注入：运行中另开终端执行 `hidutil property --matching '{"VendorID":0x2717,"ProductID":0x32B8}' --set '{"UserKeyMapping":[]}'`。
+  - 预期行为：≤60s 周期检查发现映射缺失，自动触发幂等重装，中转键恢复。
+  - 预期日志：`周期检查：hidutil 中转映射缺失，触发重装` → `hidutil 映射已重装（周期健康检查发现映射缺失）`。
+
+- [ ] **FI-08** 〔集成〕 --doctor 各故障态输出
+  - 注入/预期（每行独立注入后跑 `.build/miremote --doctor`）：
+    | 故障态 | 预期输出行 | 退出码 |
+    |---|---|---|
+    | 全部正常 | 六项全 `[通过]`/`[提示]`，末行 `全部检查通过` | 0 |
+    | kill -9 残留在设备 | `[已修复] hidutil 映射残留：检测到上次异常退出残留 N 条中转映射，已清理` | 0 |
+    | 辅助功能被撤 | `[需处理] 辅助功能权限：未授权。前往 系统设置…（x-apple.systempreferences:…Privacy_Accessibility）` | 1 |
+    | 输入监控被撤 | `[需处理] 输入监控权限：未授权…（…Privacy_ListenEvent）` | 1 |
+    | 遥控器断开/没电 | `[需处理] 遥控器连接：未检测到遥控器…（…BluetoothSettings）`；此时残留项显示 `[提示] 无法查询（遥控器可能未连接），跳过` | 1 |
+    | BlackHole 未装 | `[需处理] BlackHole 声卡驱动：未安装…（https://existential.audio/blackhole/）` | 1 |
+    | 主程序已在运行 | `已有实例在运行（锁文件 …）`（doctor 不与运行实例并发动 hidutil） | 1 |
+
+- [ ] **FI-09** 〔集成〕 --login-item 三态（CLI 未打包形态）
+  - 注入：依次运行 `--login-item status` / `--login-item on` / `--login-item off` / `--login-item bogus`。
+  - 预期行为：status → `不可用（当前为未打包 CLI，打包成 .app 后生效）` 退出 0（实测 SMAppService.mainApp.status 对裸二进制返回 .notFound）；on/off → 明确报错 `开机自启需要 .app 包…打包（M6）后此开关生效` 退出 1；bogus → 用法提示退出 2。M6 打包成 .app 后重测 on/off/status 真实注册路径（系统设置 → 登录项可见）。
+
+---
+
 ## 统计
 
 | 类型 | 条数 | 条目 |
