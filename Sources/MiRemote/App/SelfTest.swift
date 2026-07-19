@@ -443,6 +443,31 @@ enum SelfTest {
         // 加固-3. resetInputState：清瞬时层/OK 物理态/在途定时器（设备移除/睡眠/tap 失效恢复路径）
         expect(MappingEngine.resetSelfCheck(), "MappingEngine resetInputState 自测")
 
+        // M6-1. EnvironmentCheck API 健全性：只断言可调用不崩、返回结构完整，
+        //       不断言具体授权状态（取决于运行环境）。
+        do {
+            func stateTag(_ s: EnvCheckState) -> String {
+                switch s {
+                case .granted: return "granted"
+                case .denied: return "denied"
+                case .unknown: return "unknown"
+                }
+            }
+            let ax = EnvironmentCheck.accessibility()
+            expect(ax.guideURL?.scheme == "x-apple.systempreferences",
+                   "EnvCheck 辅助功能可调用+设置面板URL", stateTag(ax.state))
+            let im = EnvironmentCheck.inputMonitoring()
+            expect(im.guideURL?.scheme == "x-apple.systempreferences",
+                   "EnvCheck 输入监控可调用+设置面板URL", stateTag(im.state))
+            let bh = EnvironmentCheck.blackHole()
+            expect(bh.guideURL?.host == "existential.audio",
+                   "EnvCheck BlackHole 可调用+官方下载URL", stateTag(bh.state))
+            let rc = EnvironmentCheck.remoteConnected()
+            expect((rc.state == .granted || rc.state == .denied)
+                   && rc.guideURL?.scheme == "x-apple.systempreferences",
+                   "EnvCheck 遥控器枚举可调用+蓝牙面板URL", stateTag(rc.state))
+        }
+
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")
         return failures == 0 ? 0 : 1
     }
