@@ -448,7 +448,7 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
             log("app_mru_back：无可回切的上一个 App")
             return
         }
-        target.activate()
+        WindowSwitcher.activateApplication(target)
     }
 
     /// 前台切换 observer token：stop/deinit 时移除，防旧服务泄漏与回调叠加。

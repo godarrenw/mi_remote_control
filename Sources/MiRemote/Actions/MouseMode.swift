@@ -22,6 +22,7 @@ final class MouseMode: @unchecked Sendable {
     static let baseSpeed = 4.0    // px/tick 初速
     static let maxSpeed = 40.0    // px/tick 满速
     static let rampSeconds = 1.5  // 线性加速时长
+    static let idleSeconds = 20
 
     /// 按住 t 秒后的速度（px/tick）：4 起步，1.5s 线性到 40，之后恒定。
     static func speed(afterSeconds t: Double) -> Double {
@@ -47,6 +48,7 @@ final class MouseMode: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var held: Set<RemoteKey> = []
     private var holdStartNs: UInt64 = 0
+    private var idleSeq = 0
     private let source = CGEventSource(stateID: .combinedSessionState)
 
     /// active 的无阻塞只读镜像：TapEngine 在 tap 回调热路径分流方向键时读取，
@@ -72,6 +74,7 @@ final class MouseMode: @unchecked Sendable {
     func handle(key: RemoteKey, isDown: Bool) -> Bool {
         q.sync {
             guard active else { return false }
+            let consumed: Bool
             switch key {
             case .up, .down, .left, .right:
                 if isDown {
@@ -81,19 +84,21 @@ final class MouseMode: @unchecked Sendable {
                     held.remove(key)
                     if held.isEmpty { holdStartNs = 0 }
                 }
-                return true
+                consumed = true
             case .ok:
                 if isDown { click(.left) }
-                return true
+                consumed = true
             case .menu:
                 if isDown { click(.right) }
-                return true
+                consumed = true
             case .back:
                 if isDown { deactivateLocked() }
-                return true
+                consumed = true
             default:
-                return false  // 音量/电源/语音等保持原映射
+                consumed = false  // 音量/电源/语音等保持原映射
             }
+            if consumed, active { restartIdleTimerLocked() }
+            return consumed
         }
     }
 
@@ -107,17 +112,34 @@ final class MouseMode: @unchecked Sendable {
         t.setEventHandler { [weak self] in self?.tick() } // handler 在 q 上执行，可直接碰状态
         t.resume()
         timer = t
+        restartIdleTimerLocked()
         NSLog("[MouseMode] 进入鼠标模式")
     }
 
     private func deactivateLocked() {
         active = false
+        idleSeq &+= 1
         activeFlag.withLock { $0 = false }
         timer?.cancel()
         timer = nil
         held.removeAll()
         holdStartNs = 0
         NSLog("[MouseMode] 退出鼠标模式")
+    }
+
+    private func restartIdleTimerLocked() {
+        idleSeq &+= 1
+        let token = idleSeq
+        q.asyncAfter(deadline: .now() + .seconds(Self.idleSeconds)) { [weak self] in
+            guard let self, self.active, self.idleSeq == token else { return }
+            // 持续按住方向键是活动操作，不在移动中途强退。
+            if !self.held.isEmpty {
+                self.restartIdleTimerLocked()
+                return
+            }
+            self.deactivateLocked()
+            NSLog("[MouseMode] 空闲 \(Self.idleSeconds)s 自动退出")
+        }
     }
 
     /// 定时器 tick（在 q 上）：按住时长 → 速度 → 位移 → warp + mouseMoved。

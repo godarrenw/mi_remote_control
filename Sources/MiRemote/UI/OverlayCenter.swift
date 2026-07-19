@@ -26,7 +26,7 @@ enum SystemMenuCatalog {
         .init(title: "显示桌面",   symbol: "menubar.dock.rectangle",      action: .system("show_desktop")),
         .init(title: "左侧桌面",   symbol: "arrow.left.square",           action: .system("space_left")),
         .init(title: "右侧桌面",   symbol: "arrow.right.square",          action: .system("space_right")),
-        .init(title: "聚焦输入框", symbol: "cursorarrow.and.square.on.square.dashed", action: .focusInput),
+        .init(title: "聚焦编辑区", symbol: "cursorarrow.and.square.on.square.dashed", action: .focusInput),
         .init(title: "播放 / 暂停", symbol: "playpause",                   action: .system("play_pause")),
         .init(title: "静音",       symbol: "speaker.slash",               action: .system("mute")),
         .init(title: "音量 ＋",    symbol: "speaker.wave.3",              action: .system("volume_up")),
@@ -148,6 +148,9 @@ final class OverlayCenter {
     private var wheelApps: [NSRunningApplication] = []
     private var wheelIndex = 0
     private var wheelIdleTimer: Timer?
+    /// 窗口选择/系统菜单/教程不应无限占用遥控路由；10s 无操作自动收起。
+    private static let overlayIdleSeconds: TimeInterval = 10
+    private var overlayIdleTimer: Timer?
     // App 控制模式 HUD
     private var hudPanel: NSPanel?
     // 按键提示条（gamepad-ux B1：模式/浮层激活时屏底常驻）
@@ -207,6 +210,7 @@ final class OverlayCenter {
             showPanel()
             restartWheelIdleTimer()
         }
+        if kind != .appWheel { restartOverlayIdleTimer() }
         installEscMonitor()
         showHintBar(HintBarCatalog.hints(for: kind))
         // 捕获遥控键：浮层期间事件不走动作分发（引擎 mainDispatch 保证主线程回调）。
@@ -223,6 +227,8 @@ final class OverlayCenter {
         escMonitor = nil
         wheelIdleTimer?.invalidate()
         wheelIdleTimer = nil
+        overlayIdleTimer?.invalidate()
+        overlayIdleTimer = nil
         stopRepeat()
         cancelConfirm(refresh: false)
         // 消失过渡：SwiftUI 侧 kind→nil 驱动缩放淡出，动画结束后仅 orderOut（面板常驻不销毁）
@@ -263,6 +269,11 @@ final class OverlayCenter {
 
     private func handleKey(_ event: ButtonEvent) {
         guard let active else { return }
+        if active == .appWheel {
+            restartWheelIdleTimer()
+        } else {
+            restartOverlayIdleTimer()
+        }
         guard event.isDown else {
             keyUp(event.key)
             return
@@ -414,7 +425,7 @@ final class OverlayCenter {
         case .ok, .tv:
             let target = wheelApps.indices.contains(wheelIndex) ? wheelApps[wheelIndex] : nil
             close()
-            target?.activate()
+            if let target { WindowSwitcher.activateApplication(target) }
         case .back, .home, .menu:
             close()
         default:
@@ -425,6 +436,14 @@ final class OverlayCenter {
     private func restartWheelIdleTimer() {
         wheelIdleTimer?.invalidate()
         wheelIdleTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.close() }
+        }
+    }
+
+    private func restartOverlayIdleTimer() {
+        overlayIdleTimer?.invalidate()
+        overlayIdleTimer = Timer.scheduledTimer(withTimeInterval: Self.overlayIdleSeconds,
+                                                repeats: false) { [weak self] _ in
             Task { @MainActor in self?.close() }
         }
     }

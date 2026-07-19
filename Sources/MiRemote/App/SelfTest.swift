@@ -298,6 +298,16 @@ enum SelfTest {
                && FocusInput.isTerminalApp("com.googlecode.iterm2"), "FocusInput 终端白名单命中")
         expect(!FocusInput.isTerminalApp("com.google.Chrome")
                && !FocusInput.isTerminalApp(nil), "FocusInput 非终端/空 bundle 判非")
+        let focusRoot = CGRect(x: 0, y: 0, width: 1200, height: 900)
+        let sidebarSearch = FocusInput.candidateScore(
+            role: "AXSearchField", label: "Search",
+            frame: CGRect(x: 20, y: 80, width: 220, height: 32), rootFrame: focusRoot,
+            focused: false, editable: true)
+        let bottomComposer = FocusInput.candidateScore(
+            role: "AXTextArea", label: "Message composer",
+            frame: CGRect(x: 280, y: 720, width: 800, height: 120), rootFrame: focusRoot,
+            focused: false, editable: true)
+        expect(bottomComposer > sidebarSearch, "FocusInput 底部编辑区优先于侧栏搜索框")
 
         // M4-8. WindowSwitcher 纯逻辑（循环下标 + 全局目标挑选）
         expect(WindowSwitcher.nextIndex(after: 0, count: 3) == 1
@@ -782,10 +792,9 @@ enum SelfTest {
             expect(parsed == .overlay("system_menu"), "overlay JSON 字面量解析")
         } catch { expect(false, "Action.overlay JSON", "\(error)") }
 
-        // v2-3. show_desktop 键表：合成 Fn+F11（macOS 显示桌面默认快捷键）。
-        expect(WorkspaceActions.shortcuts[.showDesktop]
-                   == WorkspaceShortcut(keyCode: 103, modifiers: [.function]),
-               "show_desktop = Fn+F11 键表")
+        // v2-3. show_desktop 走 Mission Control 系统入口，不依赖用户 Fn/F11 快捷键偏好。
+        expect(WorkspaceActions.shortcuts[.showDesktop] == nil,
+               "show_desktop 使用直接系统入口而非易失效的 Fn+F11")
 
         // v2-4. 浮层数据模型：系统功能菜单目录 + 网格移动纯逻辑。
         expect(SystemMenuCatalog.selfCheck(), "系统功能菜单目录/网格移动自测")

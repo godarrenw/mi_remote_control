@@ -138,12 +138,6 @@ enum WorkspaceActions {
         .spaceRight: chord(124, [.control]),
         .missionControl: chord(126, [.control]),
         .applicationExpose: chord(125, [.control]),
-        // show_desktop：合成 Fn+F11（macOS「显示桌面」默认快捷键，系统设置未改动时有效）。
-        // 备选方案 `open -a "Mission Control" --args 1` 在 macOS 26(Tahoe) 上仍可用，
-        // 但会短暂激活 Mission Control.app（Dock 闪跳），故首选合成快捷键；
-        // 若实机发现用户改过 F11 快捷键导致失效，可切到 open 方案（见 ActionRunner.mission_control 同款做法）。
-        .showDesktop: chord(103, [.function]),
-
         .minimizeWindow: chord(46, [.command]),
         .minimizeApplicationWindows: chord(46, [.command, .option]),
         .closeWindow: chord(13, [.command]),
@@ -179,6 +173,10 @@ enum WorkspaceActions {
             FocusInput.perform()
             return
         }
+        if action == .showDesktop {
+            showDesktop()
+            return
+        }
         guard let shortcut = shortcuts[action] else { return }
         post(shortcut)
     }
@@ -193,7 +191,9 @@ enum WorkspaceActions {
               actionNames.allSatisfy({ !$0.isEmpty && $0 == $0.lowercased() }) else { return false }
 
         let shortcutActions = Set(shortcuts.keys)
-        guard shortcutActions == Set(WorkspaceAction.allCases.filter { $0 != .focusInput }) else { return false }
+        guard shortcutActions == Set(WorkspaceAction.allCases.filter {
+            $0 != .focusInput && $0 != .showDesktop
+        }) else { return false }
         return shortcuts.values.allSatisfy { shortcut in
             shortcut.modifiers.count == Set(shortcut.modifiers.map(\.rawValue)).count
         }
@@ -201,6 +201,22 @@ enum WorkspaceActions {
 
     private static func chord(_ keyCode: CGKeyCode, _ modifiers: [WorkspaceModifier]) -> WorkspaceShortcut {
         WorkspaceShortcut(keyCode: keyCode, modifiers: modifiers)
+    }
+
+    /// 合成 Fn+F11 受用户功能键设置与系统符号快捷键状态影响，实机可完全无响应。
+    /// Mission Control 的公开系统 App 入口不依赖这些偏好；参数 1 直接执行显示桌面。
+    private static func showDesktop() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", "Mission Control", "--args", "1"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            log("显示桌面系统入口启动失败，回退 Fn+F11：\(error.localizedDescription)")
+            post(chord(103, [.function]))
+        }
     }
 
     private static func post(_ shortcut: WorkspaceShortcut) {

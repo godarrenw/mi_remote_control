@@ -92,6 +92,10 @@ final class MappingEngine: @unchecked Sendable {
     private var momentaryOwner: RemoteKey?
     /// 上次通知过的生效层，去重 layerChanged。
     private var lastNotifiedLayer = 0
+    /// 锁定层长时无遥控操作自动回到基础层，防止用户忘记退出后按键语义一直改变。
+    static let lockedLayerIdleMs = 20_000
+    /// 自增令牌作废旧的空闲回调，与按键定时器使用同一模式。
+    private var lockedLayerIdleSeq = 0
 
     /// 生效层 = 瞬时层优先，否则锁定层。
     private var effectiveLayer: Int { momentaryLayer ?? lockedLayer }
@@ -140,6 +144,7 @@ final class MappingEngine: @unchecked Sendable {
             // 恢复后从基础层开始，不残留看不见的模式态；鼠标模式一并退出。
             if suspended {
                 self.lockedLayer = 0
+                self.invalidateLockedLayerIdleTimer()
                 MouseMode.shared.deactivate()
             }
             self._resetInputState(suspended ? "遥控暂停" : "遥控恢复")
@@ -300,6 +305,8 @@ final class MappingEngine: @unchecked Sendable {
     private func _handle(_ event: ButtonEvent) {
         // 暂停态：遥控完全惰性——不进状态机、不追踪逃生、不喂浮层。
         if suspendedLock.withLock({ $0 }) { return }
+        // 锁定控制模式中的每次遥控操作都延后空闲退出。
+        if lockedLayer != 0 { restartLockedLayerIdleTimer() }
         // 全局逃生键跟踪必须在浮层捕获分支【之前】：浮层打开时事件不进状态机，
         // 但长按菜单 1.5s 的逃生兜底在任何状态（含捕获态）都要生效。
         if event.key == .menu {
@@ -389,6 +396,7 @@ final class MappingEngine: @unchecked Sendable {
         overlayHandler = nil
         MouseMode.shared.deactivate()   // 迷路兜底：鼠标模式一并退出
         lockedLayer = 0
+        invalidateLockedLayerIdleTimer()
         momentaryLayer = nil
         momentaryOwner = nil
         if var st = states[.menu] {
@@ -535,7 +543,28 @@ final class MappingEngine: @unchecked Sendable {
 
     private func toggleLayer(_ n: Int) {
         lockedLayer = (lockedLayer == n) ? 0 : n
+        if lockedLayer == 0 {
+            invalidateLockedLayerIdleTimer()
+        } else {
+            restartLockedLayerIdleTimer()
+        }
         recomputeLayer()
+    }
+
+    private func restartLockedLayerIdleTimer() {
+        lockedLayerIdleSeq &+= 1
+        let token = lockedLayerIdleSeq
+        scheduleAfter(Self.lockedLayerIdleMs) { [weak self] in
+            guard let self, self.lockedLayerIdleSeq == token, self.lockedLayer != 0 else { return }
+            self.lockedLayer = 0
+            self.lockedLayerIdleSeq &+= 1
+            self.recomputeLayer()
+            log("锁定控制模式空闲 \(Self.lockedLayerIdleMs / 1000)s → 自动回到基础层")
+        }
+    }
+
+    private func invalidateLockedLayerIdleTimer() {
+        lockedLayerIdleSeq &+= 1
     }
 
     private func activateMomentary(_ n: Int, owner: RemoteKey) {
@@ -772,6 +801,20 @@ extension MappingEngine {
             down(e, .tv); c.advance(100); up(e, .tv)   // toggle → 层0
             expect(d.layers == [2, 0], "F toggle layer on/off")
             expect(r.actions.isEmpty, "F no tap fired while holding")
+        }
+
+        // 场景 F1：锁定层 20s 无操作自动退出；中途任意按键会重置计时。
+        do {
+            let (e, _, d, c) = makeEngine()
+            down(e, .tv); c.advance(100); up(e, .tv)
+            c.advance(Self.lockedLayerIdleMs - 1)
+            expect(e.tapRoute.effectiveLayer == 2, "F1 layer remains before idle deadline")
+            down(e, .volUp); up(e, .volUp)              // 活动重置 20s
+            c.advance(Self.lockedLayerIdleMs - 1)
+            expect(e.tapRoute.effectiveLayer == 2, "F1 activity restarts idle deadline")
+            c.advance(1)
+            expect(e.tapRoute.effectiveLayer == 0, "F1 idle timeout returns to base layer")
+            expect(d.layers == [2, 0], "F1 idle timeout emits layerChanged(0)")
         }
 
         // 场景 F2：基础态 OK/back 的 App overlay 不能篡改；长按清空仅由显式设置开启。

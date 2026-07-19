@@ -74,19 +74,8 @@ enum WindowSwitcher {
     private static func cycleGlobal() {
         guard let target = pickGlobalTarget(visibleWindows()),
               let app = NSRunningApplication(processIdentifier: target.pid) else { return }
-        app.activate()
-        guard !target.title.isEmpty else { return } // 无标题：activate 已尽力
-        let axApp = AXUIElementCreateApplication(target.pid)
-        var winsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &winsRef) == .success,
-              let wins = winsRef as? [AXUIElement] else { return } // AX 失败：静默降级
-        for w in wins {
-            var t: CFTypeRef?
-            if AXUIElementCopyAttributeValue(w, kAXTitleAttribute as CFString, &t) == .success,
-               let s = t as? String, s == target.title {
-                AXUIElementPerformAction(w, kAXRaiseAction as CFString)
-                return
-            }
+        activateApplication(app) { activeApp in
+            raiseMatchingWindow(target, app: activeApp)
         }
     }
 
@@ -121,9 +110,42 @@ enum WindowSwitcher {
     /// 激活指定窗口：app 前置 + 按标题 AXRaise 精确定位（复用全局切换的成熟逻辑）。
     static func activate(_ target: WindowInfo) {
         guard let app = NSRunningApplication(processIdentifier: target.pid) else { return }
-        app.activate()
+        activateApplication(app) { activeApp in
+            raiseMatchingWindow(target, app: activeApp)
+        }
+    }
+
+    /// 跨 App 激活统一入口。macOS 的协作式激活不保证一个后台 accessory App 直接
+    /// 调用 target.activate() 能拿到焦点；NSWorkspace 会代表当前前台 App 完成交接。
+    static func activateApplication(_ app: NSRunningApplication,
+                                    completion: ((NSRunningApplication) -> Void)? = nil) {
+        if app.isActive {
+            completion?(app)
+            return
+        }
+        guard let url = app.bundleURL else {
+            _ = app.activate(options: [.activateAllWindows])
+            completion?(app)
+            return
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        config.allowsRunningApplicationSubstitution = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { running, error in
+            DispatchQueue.main.async {
+                let activated = running ?? app
+                if error != nil {
+                    _ = app.activate(options: [.activateAllWindows])
+                }
+                completion?(activated)
+            }
+        }
+    }
+
+    /// App 已前置后，按标题精确 raise 目标窗口；无标题/无 AX 权限时 App 前置即降级成果。
+    private static func raiseMatchingWindow(_ target: WindowInfo, app: NSRunningApplication) {
         guard !target.title.isEmpty else { return }
-        let axApp = AXUIElementCreateApplication(target.pid)
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var winsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &winsRef) == .success,
               let wins = winsRef as? [AXUIElement] else { return }
