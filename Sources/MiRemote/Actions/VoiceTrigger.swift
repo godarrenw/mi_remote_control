@@ -41,6 +41,13 @@ enum VoiceTrigger {
 
     // MARK: - 输入法切换
 
+    /// macOS 26 起，Text Input Source (TIS) API 会断言调用者位于主队列；
+    /// 语音触发本身运行在专用串行队列，因此所有 TIS 调用都必须经这里切回主队列。
+    private static func onMain<T>(_ body: () -> T) -> T {
+        if Thread.isMainThread { return body() }
+        return DispatchQueue.main.sync(execute: body)
+    }
+
     private static func findInputSource(bundlePrefix: String) -> TISInputSource? {
         guard let list = TISCreateInputSourceList(nil, false)?.takeRetainedValue() as? [TISInputSource] else { return nil }
         for src in list {
@@ -57,23 +64,28 @@ enum VoiceTrigger {
 
     private static func switchIMEIfNeeded() {
         guard let prefix = config.imeBundlePrefix else { return }
-        guard let target = findInputSource(bundlePrefix: prefix) else {
-            FileHandle.standardError.write("未找到目标输入法（\(prefix)*）\n".data(using: .utf8)!)
-            return
+        let didSwitch = onMain {
+            guard let target = findInputSource(bundlePrefix: prefix) else {
+                FileHandle.standardError.write("未找到目标输入法（\(prefix)*）\n".data(using: .utf8)!)
+                return false
+            }
+            if savedInputSource == nil {
+                savedInputSource = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
+            }
+            TISSelectInputSource(target)
+            return true
         }
-        if savedInputSource == nil {
-            savedInputSource = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
-        }
-        TISSelectInputSource(target)
-        usleep(150_000) // 等输入法完成切换
+        if didSwitch { usleep(150_000) } // 在工作队列等待输入法完成切换，不阻塞主线程
     }
 
     private static func restoreIMEIfNeeded() {
         guard config.imeBundlePrefix != nil else { return }
         queue.asyncAfter(deadline: .now() + 4.0) { // 等识别文本完全上屏再还原，过早切走会把语音条孤儿化
-            if let saved = savedInputSource {
-                TISSelectInputSource(saved)
-                savedInputSource = nil
+            onMain {
+                if let saved = savedInputSource {
+                    TISSelectInputSource(saved)
+                    savedInputSource = nil
+                }
             }
         }
     }
