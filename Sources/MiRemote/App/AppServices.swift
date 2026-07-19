@@ -115,16 +115,13 @@ func migrateToMentalModelV2(_ cfg: inout MappingConfig) {
 
     var tv = g["tv"] ?? KeyBinding()
     tv.tap = .layerToggle(2)                    // 进/出 App 控制模式（层2 + HUD）
-    tv.hold = .keyStroke(key: "t", mods: ["left_cmd"])  // 当前 App 主操作（默认新建 Tab）
+    tv.hold = .overlay("app_wheel")             // App 轮盘（停留式，DESIGN §3.1b）
     tv.double = nil                             // v2 双击不定义（TV 双击切层已被控制模式取代）
     // 层2 内 TV 不再直选数字：留空让 tap 回退 layerToggle(2)，保证「再按 TV 退出模式」。
     tv.layers?.removeValue(forKey: "2")
     g["tv"] = tv
 
-    // 层1（快捷控制模式）的入口从旧 TV hold 迁到 OK hold（不覆盖用户已设 hold）。
-    var okB = g["ok"] ?? KeyBinding()
-    if okB.hold == nil { okB.hold = .layerMomentary(1) }
-    g["ok"] = okB
+    // 零同按原则（DESIGN §3.1b）：默认不再注入 OK hold=瞬时层；用户已设的 hold 保留。
 
     // 层2 音量± 由旧「数字 2/3 直选」改为「切 Agent（上一个/下一个标签）」。
     var volUp = g["volUp"] ?? KeyBinding()
@@ -159,11 +156,13 @@ func migrateToMentalModelV2(_ cfg: inout MappingConfig) {
 
 func defaultConfig() -> MappingConfig {
     // 默认配置 = 按键心智模型 v2（DESIGN §3.1b，2026-07-19 定稿）：
-    //   内容操作：方向/OK/返回原生直通（引擎保护）；OK 长按=快捷控制模式（层1）。
+    //   内容操作：方向/OK/返回原生直通（引擎保护）。
     //   同级切换：音量± = 系统音量（跟键帽一致）；控制模式内 = 切 Agent/标签。
     //   系统导航：Home 单击=显示桌面（零延迟）、长按=映射教程浮层；
     //             菜单单击=窗口选择器浮层、长按=系统功能菜单浮层。
-    //   App 专用：TV 单击=进/出 App 控制模式（层2+HUD）、长按=当前 App 主操作（默认新建 Tab ⌘T）。
+    //   App 专用：TV 单击=进/出 App 控制模式（层2+HUD）、长按=App 轮盘浮层（停留式）。
+    //   零同按组合：单手拇指操作，「按住 A 再按 B」（OK+方向手势、OK 长按瞬时层）
+    //   不进默认配置；引擎能力保留，供高级用户自配。层1 数据保留但默认无入口。
     var cfg = MappingConfig()
     cfg.voiceProfiles = ["global": VoiceTriggerRule()]
     cfg.profiles["global"] = [
@@ -173,14 +172,7 @@ func defaultConfig() -> MappingConfig {
                               layers: ["1": .system("volume_down")]),
         "left":    KeyBinding(tap: .keyStroke(key: "left_arrow", mods: [])),
         "right":   KeyBinding(tap: .keyStroke(key: "right_arrow", mods: [])),
-        "ok":      KeyBinding(tap: .keyStroke(key: "return", mods: []),
-                              hold: .layerMomentary(1),
-                              gesture: [
-                                  "up":    .system("mission_control"),
-                                  "down":  .windowCycle(scope: "app"),
-                                  "left":  .keyStroke(key: "left_bracket", mods: ["left_cmd", "left_shift"]),
-                                  "right": .keyStroke(key: "right_bracket", mods: ["left_cmd", "left_shift"]),
-                              ]),
+        "ok":      KeyBinding(tap: .keyStroke(key: "return", mods: [])),
         "back":    KeyBinding(tap: .keyStroke(key: "delete", mods: []),
                               layers: ["1": .system("previous_app")]),
         "menu":    KeyBinding(tap: .overlay("window_picker"),
@@ -189,9 +181,11 @@ func defaultConfig() -> MappingConfig {
         "home":    KeyBinding(tap: .system("show_desktop"),
                               hold: .overlay("tutorial"),
                               layers: ["1": .system("mission_control")]),
-        // TV 单击 = 进/出 App 控制模式（层2；HUD 由 GUI 随层变化显示）
+        // TV 单击 = 进/出 App 控制模式（层2；HUD 由 GUI 随层变化显示）；
+        // 长按 = App 轮盘浮层（停留式：弹出后可松手，方向选、OK/再按 TV 确认、
+        // 返回取消、3s 超时自关；浮层打开期间按键走 uiCapture 路由，UI 侧实现）。
         "tv":      KeyBinding(tap: .layerToggle(2),
-                              hold: .keyStroke(key: "t", mods: ["left_cmd"]),
+                              hold: .overlay("app_wheel"),
                               layers: ["1": .system("app_expose")]),
         // 电源长按 = 鼠标模式开关（P4：给 mouse_mode 一个开箱可达的默认入口；
         // 方向键移动指针、OK=左键。tap 保持键帽语义的显示器睡眠）。

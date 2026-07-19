@@ -1,0 +1,36 @@
+name: Release
+
+# 打 tag（v*）自动构建并发布 Release，附 DMG 与 zip。
+# CI 无本机证书，产物为 ad-hoc 签名（-unsigned 后缀）：接收方首次打开需
+# 右键→打开，且每个新版本需重新授权辅助功能/输入监控（README 已说明）。
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe 需要完整历史与 tag
+      - name: 构建 + 自检
+        run: |
+          ./build.sh
+          .build/miremote --self-test
+      - name: 组装 .app（ad-hoc）
+        run: scripts/package.sh --unsigned
+      - name: 打 DMG
+        run: scripts/make-dmg.sh --unsigned
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "MiRemote ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*.dmg dist/*.zip

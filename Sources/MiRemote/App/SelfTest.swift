@@ -412,9 +412,10 @@ enum SelfTest {
                    && migrated.settings.doubleMs == 250
                    && migrated.profiles["global"]?["menu"]?.tap == .overlay("window_picker"),
                    "v1 迁移版本/菜单键 v2 语义/双击窗口")
+            // 零同按原则：预设不再注入 OK 手势，但用户自己设过的手势必须原样保留。
             expect(migrated.profiles["global"]?["ok"]?.gesture?["up"] == .openApp("com.example.custom")
-                   && migrated.profiles["global"]?["ok"]?.gesture?["down"] == .windowCycle(scope: "app"),
-                   "v1 迁移保留用户手势并补空位")
+                   && migrated.profiles["global"]?["ok"]?.gesture?["down"] == nil,
+                   "v1 迁移保留用户手势且不注入新手势")
             expect(migrated.profiles["com.mitchellh.ghostty"] != nil
                    && migrated.profiles["com.openai.codex"] != nil
                    && migrated.profiles["com.google.Chrome"] != nil
@@ -674,13 +675,24 @@ enum SelfTest {
                    && g?["menu"]?.hold == .overlay("system_menu"),
                    "默认配置 v2：菜单=窗口选择器/系统功能菜单")
             expect(g?["tv"]?.tap == .layerToggle(2)
-                   && g?["tv"]?.hold == .keyStroke(key: "t", mods: ["left_cmd"])
+                   && g?["tv"]?.hold == .overlay("app_wheel")
                    && g?["tv"]?.double == nil,
-                   "默认配置 v2：TV=控制模式开关/App主操作，双击不定义")
+                   "默认配置 v2：TV=控制模式开关/App 轮盘，双击不定义")
             expect(g?["tv"]?.layers?["2"] == nil,
                    "默认配置 v2：TV 层2 留空保证再按退出")
-            expect(g?["ok"]?.hold == .layerMomentary(1),
-                   "默认配置 v2：OK 长按=快捷控制模式")
+            // 零同按原则（DESIGN §3.1b）：整份默认配置不含 OK+方向手势与瞬时层入口。
+            do {
+                var combo: String? = nil
+                outer: for (profile, keys) in cfg.profiles {
+                    for (key, b) in keys {
+                        if let gestures = b.gesture, !gestures.isEmpty { combo = "\(profile).\(key).gesture"; break outer }
+                        for slot in [b.tap, b.hold, b.double] {
+                            if case .layerMomentary = slot { combo = "\(profile).\(key) momentary"; break outer }
+                        }
+                    }
+                }
+                expect(combo == nil, "默认配置零同按组合（无手势/无瞬时层入口）", combo ?? "")
+            }
             expect(g?["volUp"]?.tap == .system("volume_up")
                    && g?["volDown"]?.tap == .system("volume_down"),
                    "默认配置 v2：音量±=系统音量")
@@ -730,8 +742,9 @@ enum SelfTest {
                    "v3→v4 心智模型 v2 骨架改写")
             expect(g?["volUp"]?.layers?["2"] == .tabJump(dir: 1, index: nil)
                    && g?["volDown"]?.layers?["2"] == .tabJump(dir: -1, index: nil)
-                   && g?["ok"]?.hold == .layerMomentary(1),
-                   "v3→v4 层2 音量切 Agent + OK 长按补层1入口")
+                   && g?["ok"]?.hold == nil
+                   && g?["tv"]?.hold == .overlay("app_wheel"),
+                   "v3→v4 层2 音量切 Agent + 零同按（不注入 OK 瞬时层）+ TV 长按=轮盘")
             let ghosttyTV = cfg.profiles["com.mitchellh.ghostty"]?["tv"]
             expect(ghosttyTV?.double == nil && ghosttyTV?.tap == nil,
                    "v3→v4 per-app 旧 TV 接线清除")
@@ -869,19 +882,26 @@ enum SelfTest {
             expect(parsed == .system("app_mru_back"), "system(app_mru_back) JSON 可解析绑定")
         }
 
-        // FX-5. vibe 对齐抽查：ChatGPT 桌面预设入库、Ghostty TV 主操作=「2」、飞书静音键改官方值。
+        // FX-5. vibe 对齐抽查：ChatGPT 桌面预设入库、飞书静音键改官方值、
+        // 零同按原则下预设不占 TV hold（长按让位全局 App 轮盘）、不含 OK 手势。
         do {
             expect(Presets.workPresets.contains { $0.id == "ai_chatgpt_desktop" }
                    && Presets.chatGPT.bundleID == "com.openai.chat"
-                   && Presets.chatGPT.bindings["tv"]?.hold == .keyStroke(key: "o", mods: ["left_cmd", "left_shift"]),
-                   "ChatGPT 桌面预设（TV 长按=新对话）")
-            expect(Presets.ghosttyAI.bindings["tv"]?.hold == .keyStroke(key: "2", mods: []),
-                   "Ghostty TV 长按=批准并不再问(2)")
+                   && Presets.chatGPT.bindings["menu"]?.layers?["2"] == .keyStroke(key: "k", mods: ["left_cmd"]),
+                   "ChatGPT 桌面预设（控制模式菜单=Cmd+K）")
             expect(Presets.feishu.bindings["tv"]?.tap == .keyStroke(key: "d", mods: ["left_option", "left_shift"]),
                    "飞书静音=Option+Shift+D（官方 Alt+Shift+D）")
-            expect(Presets.weChat.bindings["tv"]?.hold != nil
+            expect(Presets.weChat.bindings["menu"]?.layers?["2"] != nil
                    && Presets.weChat.bindings["menu"]?.tap == nil,
-                   "微信 TV 长按=文件传输助手宏且不占菜单 base 槽")
+                   "微信控制模式菜单=文件传输助手宏且不占菜单 base 槽")
+            var combo: String? = nil
+            outer: for p in Presets.layerPresets + Presets.workPresets {
+                for (key, b) in p.bindings {
+                    if let g = b.gesture, !g.isEmpty { combo = "\(p.id).\(key).gesture"; break outer }
+                    if key == "tv", b.hold != nil { combo = "\(p.id).tv.hold"; break outer }
+                }
+            }
+            expect(combo == nil, "工作/层预设零同按：无手势、TV hold 让位轮盘", combo ?? "")
         }
 
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")

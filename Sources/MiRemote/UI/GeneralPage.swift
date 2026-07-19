@@ -11,12 +11,8 @@ struct GeneralPage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("通用").font(.system(size: 22, weight: .bold))
-                    Text("调整触发阈值、开机行为与提示反馈。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+            VStack(alignment: .leading, spacing: Spacing.section) {
+                PageHeader(title: "通用", subtitle: "调整触发阈值、开机行为与提示反馈。")
 
                 SettingsGroup(title: "启动与显示") {
                     SettingsRow(icon: "power.circle", title: "登录时启动", subtitle: nil) {
@@ -74,7 +70,7 @@ struct GeneralPage: View {
                     SettingsGroup(title: "触发阈值") {
                         VStack(spacing: 8) {
                             HStack {
-                                Text("长按阈值").font(.callout)
+                                Text("长按阈值").font(.body)
                                 Slider(value: Binding(
                                     get: { Double(model.config.settings.holdMs) },
                                     set: { model.config.settings.holdMs = Int($0) }),
@@ -86,7 +82,7 @@ struct GeneralPage: View {
                             }
                             Divider()
                             HStack {
-                                Text("双击窗口").font(.callout)
+                                Text("双击窗口").font(.body)
                                 Slider(value: Binding(
                                     get: { Double(model.config.settings.doubleMs) },
                                     set: { model.config.settings.doubleMs = Int($0) }),
@@ -96,18 +92,18 @@ struct GeneralPage: View {
                                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                                     .frame(width: 56, alignment: .trailing)
                             }
-                            Text("双击窗口 = 0 关闭双击，短按零延迟触发")
-                                .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                            Text("默认 250 ms：只对配了双击动作的键生效（这类键短按需等窗口确认），未配双击的键短按始终零延迟；设为 0 完全关闭双击。")
+                                .font(.footnote).foregroundStyle(.tertiary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            Text("基础状态为文字输入：方向、确认、删除固定保持原生语义；App 快捷动作仅在第二功能/导航模式或明确组合手势中生效。")
-                                .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                            Text("基础状态为文字输入：方向、确认、删除固定保持原生语义；App 快捷动作仅在第二功能、导航模式或明确组合手势中生效。")
+                                .font(.footnote).foregroundStyle(.tertiary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(14)
+                        .padding(Spacing.cardPadding)
                     }
                     .padding(.top, 6)
                 } label: {
-                    Text("高级设置").font(.callout)
+                    Text("高级设置").font(.body)
                 }
 
                 SettingsGroup(title: "关于") {
@@ -147,13 +143,15 @@ struct GeneralPage: View {
                         .padding(.vertical, 6)
                     } label: {
                         Label("彻底卸载指引", systemImage: "trash")
-                            .font(.callout)
+                            .font(.body)
                     }
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, Spacing.rowH)
                     .padding(.vertical, 6)
                 }
             }
-            .padding(24)
+            .padding(Spacing.page)
+            .frame(maxWidth: 660, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { loginItemOn = model.loginItems.isEnabled }
         .confirmationDialog("关闭菜单栏图标后，只能从启动台/Spotlight 重新打开设置窗口。确定关闭？",

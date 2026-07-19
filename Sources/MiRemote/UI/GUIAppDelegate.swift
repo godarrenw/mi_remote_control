@@ -208,6 +208,11 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self?.overlayCenter?.noteLayer(layer)   // 层2=App 控制模式 HUD
                 }
             }
+            // 全局逃生键（长按菜单 1.5s）：引擎已自清层态与捕获态，主线程回调；
+            // UI 侧同步收掉全部浮层/HUD（角标随 onLayerChanged 归零自动消失）。
+            km.engine.onEscapeHatch = { [weak self] in
+                MainActor.assumeIsolated { self?.overlayCenter?.escapeHatch() }
+            }
             let healthSeize = km.onSeizeState
             km.onSeizeState = { [weak self] ok in
                 healthSeize?(ok)

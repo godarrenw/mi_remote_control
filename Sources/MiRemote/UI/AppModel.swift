@@ -88,6 +88,7 @@ enum KeyDisplay {
 enum ActionSummary {
 
     private static let baseSystemNames: [(value: String, display: String)] = [
+        ("app_mru_back", "回到上一个 App"),
         ("volume_up", "音量 ＋"), ("volume_down", "音量 －"), ("mute", "静音"),
         ("play_pause", "播放/暂停"), ("next", "下一曲"), ("prev", "上一曲"),
         ("mission_control", "调度中心"), ("launchpad", "启动台"), ("spotlight", "Spotlight"),
@@ -156,6 +157,7 @@ enum ActionSummary {
         ("window_picker", "窗口选择器浮层"),
         ("system_menu", "系统功能菜单浮层"),
         ("tutorial", "按键教程浮层"),
+        ("app_wheel", "App 轮盘（最近使用）"),
     ]
     static func overlayDisplay(_ v: String) -> String {
         overlayNames.first(where: { $0.value == v })?.display ?? "浮层 · \(v)"

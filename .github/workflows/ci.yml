@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建
+        run: ./build.sh
+      - name: 自检
+        run: .build/miremote --self-test

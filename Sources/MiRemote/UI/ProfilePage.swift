@@ -16,12 +16,9 @@ struct ProfilePage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Profile").font(.system(size: 22, weight: .bold))
-                    Text("按前台 App 自动切换按键映射。未单独配置的键继承全局默认。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+            VStack(alignment: .leading, spacing: Spacing.section) {
+                PageHeader(title: "Profile",
+                           subtitle: "按前台 App 自动切换按键映射。未单独配置的键继承全局默认。")
 
                 SettingsGroup(title: "全局") {
                     Button {
@@ -67,7 +64,9 @@ struct ProfilePage: View {
                     }
                 }
             }
-            .padding(24)
+            .padding(Spacing.page)
+            .frame(maxWidth: 660, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .sheet(isPresented: $showAddApp) { AddRunningAppSheet() }
         .sheet(isPresented: $showPresets) { PresetLibrarySheet() }
@@ -93,7 +92,7 @@ struct ProfilePage: View {
                 HStack(spacing: 10) {
                     appIcon(bundle)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(profileDisplayName(bundle)).font(.callout)
+                        Text(profileDisplayName(bundle)).font(.body)
                         Text("继承全局 · 已覆盖 \(overrides.count) 项" +
                              (names.isEmpty ? "" : "（\(names.prefix(5).joined(separator: "、"))\(names.count > 5 ? "…" : "")）"))
                             .font(.caption).foregroundStyle(.secondary)
@@ -115,8 +114,9 @@ struct ProfilePage: View {
             .buttonStyle(.plain)
             .help("删除该 App 专用方案")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Spacing.rowH)
+        .padding(.vertical, Spacing.rowV)
+        .frame(minHeight: Spacing.rowMinHeight)
     }
 
     private func appIcon(_ bundle: String) -> some View {
@@ -249,6 +249,7 @@ struct PresetLibrarySheet: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
             }
             if let msg = appliedMessage {
                 Label(msg, systemImage: "checkmark.circle.fill")
@@ -298,8 +299,8 @@ struct PresetLibrarySheet: View {
         }
         .padding(12)
         .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.card))
+        .overlay(RoundedRectangle(cornerRadius: Radius.card).stroke(Color(nsColor: .separatorColor), lineWidth: 1))
     }
 
     /// 改动清单表：键 / 当前绑定 / 预设将改成；冲突行标黄。

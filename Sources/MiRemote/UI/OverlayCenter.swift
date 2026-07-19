@@ -77,6 +77,7 @@ final class OverlayCenter {
         case windowPicker = "window_picker"
         case systemMenu = "system_menu"
         case tutorial = "tutorial"
+        case appWheel = "app_wheel"
     }
 
     private weak var model: AppModel?
@@ -94,6 +95,10 @@ final class OverlayCenter {
     private var pickerCurrentAppOnly = true
     // 系统功能菜单状态
     private var menuIndex = 0
+    // App 轮盘状态（停留式，DESIGN §3.1b：TV 长按弹出后松手停留，3s 无操作自动关）
+    private var wheelApps: [NSRunningApplication] = []
+    private var wheelIndex = 0
+    private var wheelIdleTimer: Timer?
     // App 控制模式 HUD
     private var hudPanel: NSPanel?
 
@@ -130,6 +135,12 @@ final class OverlayCenter {
             quickLook.setVisible(true,
                                  bundleID: frontApp?.bundleIdentifier,
                                  appName: frontApp?.localizedName)
+        case .appWheel:
+            // 数据源 = KeyMapperApp 的 MRU 栈（[0]=当前前台，[1..]=最近用过，主线程读）
+            wheelApps = services?.keyMapper?.mruExternalApplications.filter { !$0.isTerminated } ?? []
+            wheelIndex = wheelApps.count > 1 ? 1 : 0   // 默认选「上一个 App」，一确认即回切
+            showPanel(content: AnyView(appWheelView()))
+            restartWheelIdleTimer()
         }
         installEscMonitor()
         // 捕获遥控键：浮层期间事件不走动作分发（引擎 mainDispatch 保证主线程回调）。
@@ -144,9 +155,18 @@ final class OverlayCenter {
         engine?.setOverlayCapture(nil)
         if let escMonitor { NSEvent.removeMonitor(escMonitor) }
         escMonitor = nil
+        wheelIdleTimer?.invalidate()
+        wheelIdleTimer = nil
         panel?.orderOut(nil)
         panel = nil
         quickLook.setVisible(false, bundleID: nil, appName: nil)
+    }
+
+    /// 逃生键（长按菜单 1.5s）触发：关闭所有浮层与 HUD。层态由引擎自清，
+    /// 菜单栏/角标随 onLayerChanged 回到全局态。
+    func escapeHatch() {
+        close()
+        noteLayer(0)
     }
 
     /// 真键盘 Esc 关闭（浮层不抢焦点，收不到 keyDown，用全局监听兜底；需输入监控权限，已具备）。
@@ -165,6 +185,7 @@ final class OverlayCenter {
         switch active {
         case .windowPicker: handlePickerKey(event.key)
         case .systemMenu:   handleMenuKey(event.key)
+        case .appWheel:     handleWheelKey(event.key)
         case .tutorial:
             // 再按 Home / 返回 / OK 关闭；其余键吞掉（教程页不该有副作用）。
             if event.key == .home || event.key == .back || event.key == .ok { close() }
@@ -218,6 +239,44 @@ final class OverlayCenter {
         default:
             break
         }
+    }
+
+    /// App 轮盘（停留式）：方向环选 App、OK 或再按 TV 确认切换、返回取消，
+    /// 每次按键重置 3s 无操作自动关闭计时。
+    private func handleWheelKey(_ key: RemoteKey) {
+        restartWheelIdleTimer()
+        switch key {
+        case .left, .up:
+            guard !wheelApps.isEmpty else { return }
+            wheelIndex = (wheelIndex - 1 + wheelApps.count) % wheelApps.count
+            refreshPanel(content: AnyView(appWheelView()))
+        case .right, .down:
+            guard !wheelApps.isEmpty else { return }
+            wheelIndex = (wheelIndex + 1) % wheelApps.count
+            refreshPanel(content: AnyView(appWheelView()))
+        case .ok, .tv:
+            let target = wheelApps.indices.contains(wheelIndex) ? wheelApps[wheelIndex] : nil
+            close()
+            target?.activate()
+        case .back, .home, .menu:
+            close()
+        default:
+            break
+        }
+    }
+
+    private func restartWheelIdleTimer() {
+        wheelIdleTimer?.invalidate()
+        wheelIdleTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.close() }
+        }
+    }
+
+    private func appWheelView() -> some View {
+        AppWheelView(apps: wheelApps.map {
+            AppWheelView.Entry(name: $0.localizedName ?? $0.bundleIdentifier ?? "App",
+                               bundleID: $0.bundleIdentifier)
+        }, selected: wheelIndex)
     }
 
     private func reloadPickerEntries() {
@@ -456,6 +515,84 @@ private struct SystemMenuView: View {
         .overlay(RoundedRectangle(cornerRadius: 16)
             .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
         .shadow(radius: 24, y: 8)
+    }
+}
+
+/// App 轮盘（停留式）：图标沿圆环排布，中心显示选中 App 名与操作提示。
+struct AppWheelView: View {
+    struct Entry {
+        let name: String
+        let bundleID: String?
+    }
+    let apps: [Entry]
+    let selected: Int
+
+    private let radius: CGFloat = 96
+
+    var body: some View {
+        VStack(spacing: 10) {
+            if apps.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "circle.dashed").font(.system(size: 28)).foregroundStyle(.secondary)
+                    Text("暂无最近使用的 App").font(.callout)
+                    Text("切换过几个 App 后再试；3 秒后自动关闭").font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 30)
+            } else {
+                ZStack {
+                    // 圆环底
+                    Circle()
+                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                        .frame(width: radius * 2, height: radius * 2)
+                    // 中心：选中 App 名
+                    VStack(spacing: 3) {
+                        Text(apps.indices.contains(selected) ? apps[selected].name : "")
+                            .font(.system(size: 14, weight: .semibold))
+                            .lineLimit(1)
+                            .frame(maxWidth: radius * 1.3)
+                        Text(selected == 0 ? "当前前台" : "最近使用")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    // 图标沿圆环（从正上方起顺时针均布）
+                    ForEach(Array(apps.enumerated()), id: \.offset) { index, entry in
+                        let angle = Double(index) / Double(apps.count) * 2 * .pi - .pi / 2
+                        icon(entry, isSelected: index == selected)
+                            .offset(x: radius * CGFloat(cos(angle)),
+                                    y: radius * CGFloat(sin(angle)))
+                    }
+                }
+                .frame(width: radius * 2 + 76, height: radius * 2 + 76)
+            }
+            Text("方向键选择 · OK / TV 切换 · 返回取消 · 3 秒无操作自动关闭")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(22)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18)
+            .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
+        .shadow(radius: 24, y: 8)
+    }
+
+    @ViewBuilder
+    private func icon(_ entry: Entry, isSelected: Bool) -> some View {
+        VStack(spacing: 4) {
+            Group {
+                if let bundleID = entry.bundleID,
+                   let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable()
+                } else {
+                    Image(systemName: "app.dashed").font(.title).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: isSelected ? 52 : 40, height: isSelected ? 52 : 40)
+            .background(Circle().fill(Color(nsColor: .controlBackgroundColor))
+                .padding(-7)
+                .shadow(color: isSelected ? Color.accentColor.opacity(0.5) : .clear, radius: 6))
+            .overlay(Circle()
+                .stroke(isSelected ? Color.accentColor : .clear, lineWidth: 2.5)
+                .padding(-7))
+        }
+        .animation(.easeInOut(duration: 0.12), value: isSelected)
     }
 }
 

@@ -142,6 +142,8 @@ struct ActionPicker: View {
             }
             Button("打开应用…") { pickApp() }
                 .help("一键直达某个 App（比循环切换快得多）")
+            Button("回到上一个 App") { onChange(.system("app_mru_back")) }
+                .help("按最近使用顺序切回刚才用的那个 App")
             Button("语音输入") { onChange(.voice) }
                 .help("按住说话，经语音链路出字")
             Menu("窗口与标签") {

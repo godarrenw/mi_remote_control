@@ -35,12 +35,12 @@ struct RootView: View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 0) {
                 // 侧栏头部
-                HStack(spacing: 10) {
+                HStack(spacing: Spacing.intra) {
                     Image(nsImage: NSApplication.shared.applicationIconImage)
                         .resizable().frame(width: 36, height: 36)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("遥控器控制台").font(.system(size: 13, weight: .semibold))
+                        Text("遥控器控制台").font(.headline)
                         HStack(spacing: 4) {
                             Text("MI RC 2 Pro").font(.caption2).foregroundStyle(.secondary)
                             if let pct = model.batteryPercent {

@@ -9,14 +9,14 @@ struct SettingsGroup<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .kerning(0.5)
                 .padding(.leading, 4)
             VStack(spacing: 0) { content }
                 .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.card))
+                .overlay(RoundedRectangle(cornerRadius: Radius.card)
                     .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
         }
     }
@@ -30,12 +30,12 @@ struct SettingsRow<Trailing: View>: View {
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Spacing.intra) {
             Image(systemName: icon)
                 .foregroundStyle(iconColor)
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.callout)
+                Text(title).font(.body)
                 if let subtitle {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary)
                 }
@@ -43,9 +43,9 @@ struct SettingsRow<Trailing: View>: View {
             Spacer()
             trailing
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .frame(minHeight: 38)
+        .padding(.horizontal, Spacing.rowH)
+        .padding(.vertical, Spacing.rowV)
+        .frame(minHeight: Spacing.rowMinHeight)
     }
 }
 
@@ -65,7 +65,7 @@ struct MappingPage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: Spacing.section) {
                 header
                 if model.activeLayer != 0 {
                     Label("已开启：\(modeDisplayName(model.activeLayer))（同一按键现在使用第二功能）", systemImage: "switch.2")
@@ -77,7 +77,9 @@ struct MappingPage: View {
                     keyEditor
                 }
             }
-            .padding(24)
+            .padding(Spacing.page)
+            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .sheet(isPresented: $showKeyLearn) { KeyLearnSheet() }
         .onChange(of: model.savedTick) {
@@ -90,14 +92,10 @@ struct MappingPage: View {
 
     private var header: some View {
         HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("按键映射").font(.system(size: 22, weight: .bold))
-                Text(model.currentProfile == "global"
-                     ? "点击左侧遥控器上的按键，编辑它的触发动作。改动即时保存并生效。"
-                     : "正在编辑 profile「\(profileDisplayName(model.currentProfile))」的覆盖绑定。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            PageHeader(title: "按键映射",
+                       subtitle: model.currentProfile == "global"
+                       ? "点击左侧遥控器上的按键，编辑它的触发动作。改动即时保存并生效。"
+                       : "正在编辑 profile「\(profileDisplayName(model.currentProfile))」的覆盖绑定。")
             Spacer()
             if showSaved {
                 Label("已保存", systemImage: "checkmark.circle.fill")
@@ -115,22 +113,20 @@ struct MappingPage: View {
     }
 
     private var remotePanel: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: Spacing.intra) {
             RemoteDiagram(selected: $model.selectedKey,
                           flashing: model.lastPressedKey,
                           connected: model.connected)
                 .frame(width: 190)
-            Text("深色圆键为遥控器实体按键位置示意，选中的按键以系统蓝细描边高亮")
-                .font(.system(size: 10))
-                .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+            Text("深色圆键为遥控器实体按键位置示意，选中的按键以强调色描边高亮")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
                 .frame(width: 190)
         }
         .padding(.vertical, 16)
-        .padding(.horizontal, 14)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
-        .background(Color.gray.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, Spacing.rowH)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.hud))
     }
 
     // MARK: KeyEditor
@@ -138,20 +134,21 @@ struct MappingPage: View {
     private var keyEditor: some View {
         let key = model.selectedKey
         let binding = model.binding(for: key)
-        return VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: Spacing.section) {
             // 头部
-            HStack(spacing: 10) {
+            HStack(spacing: Spacing.intra) {
                 Text(KeyDisplay.badge(key))
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 30, height: 30)
                     .background(Color.accentColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.badge))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(KeyDisplay.name(key)).font(.system(size: 15, weight: .semibold))
-                    Text(KeyDisplay.usage(key)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(KeyDisplay.name(key)).font(.title3.weight(.semibold))
+                    Text(KeyDisplay.usage(key)).font(.subheadline).foregroundStyle(.secondary)
                 }
             }
+            .animation(Motion.select, value: key)
 
             // 分组 A：触发方式
             SettingsGroup(title: "触发方式") {
@@ -170,7 +167,7 @@ struct MappingPage: View {
                 RowDivider()
                 SettingsRow(icon: "ellipsis", iconColor: .purple, title: "双击",
                             subtitle: model.config.settings.doubleMs > 0
-                                ? "\(model.config.settings.doubleMs)ms 窗口内连按两次"
+                                ? "\(model.config.settings.doubleMs)ms 窗口内连按两次；配了双击后此键短按需等窗口确认"
                                 : "已关闭（在通用页开启）") {
                     ActionPicker(action: binding.double) { new in
                         model.updateBinding(for: key) { $0.double = new }
@@ -178,8 +175,9 @@ struct MappingPage: View {
                 }
             }
 
-            // 分组 B：手势（仅 OK）
-            if key == .ok {
+            // 分组 B：手势（仅 OK；零同按原则——默认配置无同按手势时不展示此组，
+            // 配置里有绑定才显示，高级用户可经 config.json 自配后在此编辑）
+            if key == .ok, binding.gesture?.isEmpty == false {
                 SettingsGroup(title: "手势（按住 OK + 方向键）") {
                     ForEach(Array(zip(["up", "down", "left", "right"],
                                       ["arrow.up", "arrow.down", "arrow.left", "arrow.right"])), id: \.0) { dir, sym in
@@ -221,8 +219,8 @@ struct MappingPage: View {
             }
 
             Text("绑定组合键可点击「录制快捷键」。如果不确定当前状态，可再按一下 TV 键退出 App 控制模式。")
-                .font(.system(size: 11))
-                .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -257,6 +255,7 @@ struct KeyLearnSheet: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
             }
             if let key = learned {
                 VStack(spacing: 6) {

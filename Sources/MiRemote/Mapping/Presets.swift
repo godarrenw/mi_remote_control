@@ -49,13 +49,14 @@ enum Presets {
         .macro(steps: [.action(.system(systemAction)), .delay(ms: 250), .action(.focusInput)])
     }
 
-    /// 老配置升级时补齐四向手势与各层内绑定；slot 级合并不会覆盖用户已有设置。
+    /// 老配置升级时补齐各层内绑定；slot 级合并不会覆盖用户已有设置。
     /// v2 起系统导航键（Home/菜单/TV）的 base 槽位由 defaultConfig / v4 迁移负责，
     /// 预设不再写 menu.tap / tv 的 base 触发位（避免劫持窗口选择器与控制模式入口）。
+    /// 零同按原则（DESIGN §3.1b）：OK+方向手势不进预设数据（引擎能力保留，供自配）。
     static let coreGestures = Preset(
         id: "core_gestures",
-        displayName: "四向效率手势",
-        note: "按住 OK + 方向触发四向手势；OK 长按进入快捷控制模式；TV 单击进入/退出 App 控制模式。",
+        displayName: "效率层绑定",
+        note: "快捷控制层（层1）与导航层（层3）的效率绑定；TV 单击进入/退出 App 控制模式。层1 默认无入口，可自行给任意键的长按绑「临时进入层 1」。",
         bundleID: nil,
         bindings: [
             "menu": KeyBinding(layers: ["1": .system("next_app"), "3": .layerToggle(3)]),
@@ -66,12 +67,7 @@ enum Presets {
                                          "3": switchAndFocus("next_app")]),
             "up": KeyBinding(layers: ["3": switchAndFocus("previous_app_window")]),
             "down": KeyBinding(layers: ["3": switchAndFocus("next_app_window")]),
-            "ok": KeyBinding(gesture: [
-                "up": .system("mission_control"),
-                "down": .windowCycle(scope: "app"),
-                "left": .tabJump(dir: -1, index: nil),
-                "right": .tabJump(dir: 1, index: nil),
-            ], layers: ["3": .focusInput]),
+            "ok": KeyBinding(layers: ["3": .focusInput]),
             "back": KeyBinding(layers: ["1": .system("previous_app"), "3": .system("space_left")]),
             "home": KeyBinding(layers: ["1": .system("show_desktop"), "2": ks("c", ["left_ctrl"]),
                                         "3": .system("space_right")]),
@@ -141,7 +137,7 @@ enum Presets {
     static let ghosttyAI = Preset(
         id: "ai_ghostty",
         displayName: "Ghostty · Codex / Claude Code",
-        note: "左右切 Tab，上下选 CLI 选项，OK=确认、长按=Ctrl+C，返回=Esc、长按=Ctrl+U 清行。TV 单击进 App 控制模式，长按=按下「2」批准并不再问（CC/Codex 编号菜单第 2 项，vibe 调研 §1.3 主操作）。",
+        note: "左右切 Tab，上下选 CLI 选项，OK=确认、长按=Ctrl+C，返回=Esc、长按=Ctrl+U 清行。TV 单击进 App 控制模式（长按=App 轮盘，全局一致）。「批准并不再问(2)」可自行绑到控制模式内的空槽（vibe 调研 §1.3）。",
         bundleID: "com.mitchellh.ghostty",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil),
@@ -152,14 +148,11 @@ enum Presets {
                              layers: ["1": ks("up_arrow", ["left_cmd", "left_option"])]),
             "down": KeyBinding(tap: ks("down_arrow"),
                                layers: ["1": ks("down_arrow", ["left_cmd", "left_option"])]),
-            "ok": KeyBinding(tap: ks("return"), hold: ks("c", ["left_ctrl"]), gesture: [
-                "up": .system("mission_control"), "down": .windowCycle(scope: "app"),
-                "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
-            ], layers: ["1": ks("return", ["left_cmd", "left_shift"])]),
+            "ok": KeyBinding(tap: ks("return"), hold: ks("c", ["left_ctrl"]),
+                             layers: ["1": ks("return", ["left_cmd", "left_shift"])]),
             "back": KeyBinding(tap: ks("escape"), hold: ks("u", ["left_ctrl"])),
             "home": KeyBinding(tap: .focusInput),
-            // TV 主操作：批准并不再问（`2`）——最省心的信任放行（vibe 调研 §1.3/§7）。
-            "tv": KeyBinding(hold: ks("2")),
+            // TV hold 不再占用：全局 TV 长按 = App 轮盘（零同按原则下的停留式切 App）。
         ]
     )
 
@@ -168,22 +161,18 @@ enum Presets {
         id: "ai_chatgpt_desktop",
         displayName: "ChatGPT 桌面版",
         note: """
-        上下选择，OK=发送，返回=Esc；控制模式内 返回=Cmd+. 停止生成、菜单=Cmd+K 搜索/历史会话；\
-        TV 长按=新对话 ⌘⇧O。语音输入推荐用遥控器自带语音链路（ChatGPT 内置语音无公开快捷键，待实测）。
+        上下选择，OK=发送，返回=Esc；控制模式内 返回=Cmd+. 停止生成、菜单=Cmd+K 搜索/历史会话。\
+        新对话 ⌘⇧O 可自行绑到控制模式内空槽。语音输入推荐用遥控器自带语音链路（ChatGPT 内置语音无公开快捷键，待实测）。
         """,
         bundleID: "com.openai.chat",
         bindings: [
             "up": KeyBinding(tap: ks("up_arrow")),
             "down": KeyBinding(tap: ks("down_arrow")),
-            "ok": KeyBinding(tap: ks("return"), gesture: [
-                "up": .system("mission_control"), "down": .windowCycle(scope: "app"),
-                "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
-            ]),
+            "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("escape"),
                                layers: ["2": ks("period", ["left_cmd"])]),   // Cmd+. 停止生成
             "menu": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),        // Cmd+K 搜索/历史
             "home": KeyBinding(tap: .focusInput),
-            "tv": KeyBinding(hold: ks("o", ["left_cmd", "left_shift"])),     // 新对话（主操作）
         ]
     )
 
@@ -197,10 +186,7 @@ enum Presets {
             "right": KeyBinding(tap: .tabJump(dir: 1, index: nil)),
             "up": KeyBinding(tap: ks("up_arrow")),
             "down": KeyBinding(tap: ks("down_arrow")),
-            "ok": KeyBinding(tap: ks("return"), gesture: [
-                "up": .system("mission_control"), "down": .windowCycle(scope: "app"),
-                "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
-            ]),
+            "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("escape")),
             "home": KeyBinding(tap: .focusInput),
         ]
@@ -209,22 +195,18 @@ enum Presets {
     static let chrome = Preset(
         id: "browser_chrome",
         displayName: "Google Chrome",
-        note: "左右切标签，上下翻页，OK=确认，返回=浏览器后退，主页键=地址栏；TV 长按=新标签 ⌘T（App 主操作）。",
+        note: "左右切标签，上下翻页，OK=确认，返回=浏览器后退，主页键=地址栏；控制模式内菜单=Cmd+K（网页版 AI 搜索/历史）。",
         bundleID: "com.google.Chrome",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
             "right": KeyBinding(tap: .tabJump(dir: 1, index: nil)),
             "up": KeyBinding(tap: ks("page_up")),
             "down": KeyBinding(tap: ks("page_down")),
-            "ok": KeyBinding(tap: ks("return"), gesture: [
-                "up": .system("mission_control"), "down": .windowCycle(scope: "app"),
-                "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
-            ]),
+            "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("left_bracket", ["left_cmd"])),
             "home": KeyBinding(tap: ks("l", ["left_cmd"])),
             // 控制模式内菜单 = Cmd+K（claude.ai / chatgpt.com 网页版搜索/历史，vibe 调研 §5.2）
             "menu": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),
-            "tv": KeyBinding(hold: ks("t", ["left_cmd"])),
         ]
     )
 
@@ -238,10 +220,7 @@ enum Presets {
             "right": KeyBinding(tap: .tabJump(dir: 1, index: nil)),
             "up": KeyBinding(tap: ks("up_arrow")),
             "down": KeyBinding(tap: ks("down_arrow")),
-            "ok": KeyBinding(tap: ks("return"), gesture: [
-                "up": .system("mission_control"), "down": .windowCycle(scope: "app"),
-                "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
-            ]),
+            "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("escape")),
             "home": KeyBinding(tap: .focusInput),
         ]
@@ -250,22 +229,18 @@ enum Presets {
     static let safari = Preset(
         id: "browser_safari",
         displayName: "Safari",
-        note: "左右切标签，上下翻页，OK=确认，返回=后退，主页键=地址栏；TV 长按=新标签 ⌘T（App 主操作）。",
+        note: "左右切标签，上下翻页，OK=确认，返回=后退，主页键=地址栏；控制模式内菜单=Cmd+K（网页版 AI 搜索/历史）。",
         bundleID: "com.apple.Safari",
         bindings: [
             "left": KeyBinding(tap: .tabJump(dir: -1, index: nil)),
             "right": KeyBinding(tap: .tabJump(dir: 1, index: nil)),
             "up": KeyBinding(tap: ks("page_up")),
             "down": KeyBinding(tap: ks("page_down")),
-            "ok": KeyBinding(tap: ks("return"), gesture: [
-                "up": .system("mission_control"), "down": .windowCycle(scope: "app"),
-                "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
-            ]),
+            "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("left_bracket", ["left_cmd"])),
             "home": KeyBinding(tap: ks("l", ["left_cmd"])),
             // 控制模式内菜单 = Cmd+K（网页版 AI 搜索/历史，vibe 调研 §5.2）
             "menu": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),
-            "tv": KeyBinding(hold: ks("t", ["left_cmd"])),
         ]
     )
 
@@ -276,8 +251,8 @@ enum Presets {
         id: "chat_wechat",
         displayName: "微信",
         note: """
-        上下浏览会话/消息，OK=发送，返回=Esc，主页键=搜索；控制模式内 下=Cmd+G 下一个未读会话。\
-        TV 长按=切到文件传输助手（宏：搜索→键入→回车，【待实测】）。\
+        上下浏览会话/消息，OK=发送，返回=Esc，主页键=搜索；控制模式内 下=Cmd+G 下一个未读会话、\
+        菜单=切到文件传输助手（宏：搜索→键入→回车，【待实测】）。\
         上一个会话/引用回复等无原生快捷键，待 AX 实现后补。
         """,
         bundleID: "com.tencent.xinWeChat",
@@ -287,16 +262,12 @@ enum Presets {
                                layers: ["2": ks("g", ["left_cmd"])]),   // 下一个未读会话（官方唯一会话跳转键）
             "left": KeyBinding(tap: ks("page_up")),
             "right": KeyBinding(tap: ks("page_down")),
-            "ok": KeyBinding(tap: ks("return"), gesture: [
-                "up": .system("mission_control"), "down": .windowCycle(scope: "app"),
-                "left": .tabJump(dir: -1, index: nil), "right": .tabJump(dir: 1, index: nil),
-            ]),
+            "ok": KeyBinding(tap: ks("return")),
             "back": KeyBinding(tap: ks("escape")),
             "home": KeyBinding(tap: ks("f", ["left_cmd"])),
-            // 控制模式内菜单 / TV 长按 = 切文件传输助手（Vibe 高频「甩给自己」，微信无原生键）。
+            // 控制模式内菜单 = 切文件传输助手（Vibe 高频「甩给自己」，微信无原生键）。
             // 宏路径【待实测】：搜索框快捷键与聚焦时序需实机确认。
             "menu": KeyBinding(layers: ["2": fileTransferMacro]),
-            "tv": KeyBinding(hold: fileTransferMacro),
         ]
     )
 

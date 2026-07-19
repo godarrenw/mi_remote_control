@@ -39,12 +39,9 @@ struct VoicePage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("语音").font(.system(size: 22, weight: .bold))
-                    Text("选择音频来源，并为不同 App 自动发送各自的语音输入快捷键。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+            VStack(alignment: .leading, spacing: Spacing.section) {
+                PageHeader(title: "语音",
+                           subtitle: "选择音频来源，并为不同 App 自动发送各自的语音输入快捷键。")
 
                 if model.voiceMode == .remoteMic && !blackHoleInstalled {
                     Label("BlackHole 未安装，遥控器麦克风模式不可用", systemImage: "exclamationmark.triangle.fill")
@@ -66,7 +63,7 @@ struct VoicePage: View {
                 SettingsGroup(title: "按 App 的语音快捷键") {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text("适用 App").font(.callout)
+                            Text("适用 App").font(.body)
                             Spacer()
                             Picker("", selection: $selectedProfile) {
                                 ForEach(selectableProfiles, id: \.self) { profile in
@@ -83,7 +80,7 @@ struct VoicePage: View {
                         }
                         RowDivider()
                         HStack {
-                            Text("触发按键").font(.callout)
+                            Text("触发按键").font(.body)
                             Spacer()
                             Picker("", selection: triggerKeyBinding) {
                                 ForEach(triggerKeys, id: \.0) { item in Text(item.1).tag(item.0) }
@@ -92,7 +89,7 @@ struct VoicePage: View {
                             .frame(width: 250)
                         }
                         HStack {
-                            Text("触发方式").font(.callout)
+                            Text("触发方式").font(.body)
                             Spacer()
                             Picker("", selection: triggerModeBinding) {
                                 Text("按住说话").tag("hold")
@@ -103,7 +100,7 @@ struct VoicePage: View {
                             .frame(width: 250)
                         }
                         HStack {
-                            Text("语音工具").font(.callout)
+                            Text("语音工具").font(.body)
                             Spacer()
                             Picker("", selection: imeModeBinding) {
                                 Text("豆包输入法（自动切换）").tag("doubao")
@@ -127,9 +124,9 @@ struct VoicePage: View {
                             }
                         }
                         Text("这里设置的是遥控器开始传音时，MiRemote 向当前 App 发送的快捷键。请先在对应语音工具里设成同一个键。")
-                            .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                            .font(.footnote).foregroundStyle(.tertiary)
                     }
-                    .padding(14)
+                    .padding(Spacing.cardPadding)
                 }
 
                 linkSelfCheckGroup
@@ -157,7 +154,7 @@ struct VoicePage: View {
                         LevelMeterView(bars: model.levelBars, active: model.voiceActive)
                         RowDivider().padding(.leading, -44)
                         HStack {
-                            Text("输入增益").font(.callout)
+                            Text("输入增益").font(.body)
                             Slider(value: $model.voiceGainDb, in: -12...12, step: 1)
                             Text(String(format: "%+.0f dB", model.voiceGainDb))
                                 .font(.caption.monospacedDigit())
@@ -165,12 +162,14 @@ struct VoicePage: View {
                                 .frame(width: 52, alignment: .trailing)
                         }
                         Text("增益改动在下次语音会话生效")
-                            .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                            .font(.footnote).foregroundStyle(.tertiary)
                     }
-                    .padding(14)
+                    .padding(Spacing.cardPadding)
                 }
             }
-            .padding(24)
+            .padding(Spacing.page)
+            .frame(maxWidth: 660, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .sheet(isPresented: $showAddApp) { AddRunningAppSheet() }
         .onAppear {
@@ -225,7 +224,7 @@ struct VoicePage: View {
                 .frame(width: 20)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout)
+                Text(title).font(.body)
                 if light != .ok {
                     Text(fix).font(.caption).foregroundStyle(.secondary)
                 }
@@ -237,8 +236,8 @@ struct VoicePage: View {
                     .foregroundStyle(light == .pending ? Color.secondary : Color.orange)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Spacing.rowH)
+        .padding(.vertical, Spacing.rowV)
     }
 
     // MARK: 豆包麦克风设置图文（N-16；文字版分步，图占位）
@@ -250,18 +249,47 @@ struct VoicePage: View {
                 Text("2. 找到「语音 / 麦克风」设置项。")
                 Text("3. 把麦克风（音频输入设备）从默认改为 **BlackHole 2ch**。")
                 Text("4. 回到这里按住遥控器语音键说话——上方自检第 3 项变绿即成功。")
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.secondary.opacity(0.12))
-                    .frame(height: 90)
-                    .overlay(
-                        Label("示意图占位（豆包设置 · 麦克风选 BlackHole 2ch）", systemImage: "photo")
-                            .font(.caption).foregroundStyle(.secondary))
+                doubaoMicIllustration
                 Text("只需要设置一次；说话时 MiRemote 会临时把系统输入切到 BlackHole，松开语音键约 1 秒后自动还原。")
-                    .font(.system(size: 10)).foregroundStyle(Color(nsColor: .tertiaryLabelColor))
+                    .font(.footnote).foregroundStyle(.tertiary)
             }
             .font(.caption)
-            .padding(14)
+            .padding(Spacing.cardPadding)
         }
+    }
+
+    /// 豆包麦克风设置示意（矢量绘制的迷你设置行，代替裸占位矩形）。
+    private var doubaoMicIllustration: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "gearshape.fill").foregroundStyle(.secondary)
+                Text("豆包 · 设置").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+            }
+            Divider()
+            HStack(spacing: 8) {
+                Image(systemName: "mic.fill").foregroundStyle(Color.accentColor)
+                Text("麦克风").font(.caption)
+                Spacer()
+                HStack(spacing: 4) {
+                    Text("BlackHole 2ch").font(.caption.weight(.medium))
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
+                }
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.wave.2.fill").foregroundStyle(.tertiary)
+                Text("扬声器").font(.caption).foregroundStyle(.tertiary)
+                Spacer()
+                Text("系统默认").font(.caption).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
     }
 
     private var triggerKeyBinding: Binding<String> {
@@ -326,8 +354,8 @@ struct LevelMeterView: View {
     }
 
     private func color(for level: Float) -> Color {
-        if level > 0.5 { return Color(white: 0.25) }
-        if level > 0.15 { return Color(white: 0.45) }
-        return Color(white: 0.75)
+        if level > 0.5 { return .primary.opacity(0.85) }
+        if level > 0.15 { return .secondary }
+        return Color.secondary.opacity(0.35)
     }
 }
