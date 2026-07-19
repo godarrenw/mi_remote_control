@@ -20,6 +20,8 @@
     <string>@BUILD_VERSION@</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
+    <key>LSUIElement</key>
+    <false/>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>连接小米蓝牙遥控器并接收语音数据。</string>
     <key>NSHighResolutionCapable</key>

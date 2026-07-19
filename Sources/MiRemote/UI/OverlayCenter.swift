@@ -29,18 +29,24 @@ enum SystemMenuCatalog {
         .init(title: "聚焦编辑区", symbol: "cursorarrow.and.square.on.square.dashed", action: .focusInput),
         .init(title: "播放 / 暂停", symbol: "playpause",                   action: .system("play_pause")),
         .init(title: "静音",       symbol: "speaker.slash",               action: .system("mute")),
-        .init(title: "音量 ＋",    symbol: "speaker.wave.3",              action: .system("volume_up")),
         .init(title: "打开 MiRemote 设置", symbol: "gearshape",           action: .overlay("open_settings")),
         .init(title: "退出当前 App", symbol: "escape",                    action: .keyStroke(key: "q", mods: ["left_cmd"]), dangerous: true),
         .init(title: "锁屏",       symbol: "lock",                        action: .system("lock_screen"), dangerous: true),
         .init(title: "睡眠",       symbol: "moon.zzz",                    action: .system("display_sleep"), dangerous: true),
     ]
-    /// 常规区列数：10 个常规项 = 5×2 满行；3 个危险项独立居中一行（网格无孤行）。
-    static let columns = 5
+    /// 常规区列数：9 个常规项 = 3×3；3 个危险项独立一行。
+    static let columns = 3
     /// 危险项 OK 按住确认时长（gamepad-ux D2 遥控场景甜点值）。
     static let confirmHoldSeconds: TimeInterval = 0.6
-    /// 行宽布局：两行常规 + 一行危险区。
-    static var rowWidths: [Int] { [columns, columns, items.filter(\.dangerous).count] }
+    /// 行宽布局：常规网格 + 末行危险区。
+    static var rowWidths: [Int] {
+        let regular = items.filter { !$0.dangerous }.count
+        var rows = Array(repeating: columns, count: regular / columns)
+        if regular % columns != 0 { rows.append(regular % columns) }
+        let dangerous = items.filter(\.dangerous).count
+        if dangerous > 0 { rows.append(dangerous) }
+        return rows
+    }
 
     /// index → (行, 列)（按 rowWidths 切分）。
     static func position(of index: Int, rows: [Int]) -> (row: Int, col: Int) {
@@ -84,18 +90,25 @@ enum SystemMenuCatalog {
             default: return false
             }
         }
+        // 实体音量 +/- 已是全局快捷键，系统菜单不再重复；保留无实体键的静音。
+        let systemNames = items.compactMap { item -> String? in
+            if case .system(let name) = item.action { return name }
+            return nil
+        }
+        guard systemNames.contains("mute"),
+              !systemNames.contains("volume_up"), !systemNames.contains("volume_down") else { return false }
         // 危险项必须集中在末尾且要求按住确认；常规区必须刚好铺满整行（无孤行）
         let dangerousIdx = items.enumerated().filter { $0.element.dangerous }.map(\.offset)
         guard dangerousIdx == Array((items.count - dangerousIdx.count)..<items.count) else { return false }
         guard (items.count - dangerousIdx.count) % columns == 0 else { return false }
-        // 方向移动纯逻辑抽查（行宽 [5,5,3] 共 13 项）
+        // 方向移动纯逻辑抽查（行宽 [3,3,3,3] 共 12 项）
         let rows = rowWidths
         return move(0, key: .right, rows: rows) == 1
-            && move(0, key: .left, rows: rows) == 12
-            && move(1, key: .down, rows: rows) == 6
-            && move(6, key: .down, rows: rows) == 11
-            && move(9, key: .down, rows: rows) == 12
-            && move(12, key: .up, rows: rows) == 7
+            && move(0, key: .left, rows: rows) == 11
+            && move(1, key: .down, rows: rows) == 4
+            && move(4, key: .down, rows: rows) == 7
+            && move(8, key: .down, rows: rows) == 11
+            && move(11, key: .up, rows: rows) == 8
             && move(1, key: .up, rows: rows) == 1
     }
 }

@@ -22,9 +22,9 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
         configureMainMenu()
-        // 菜单栏优先形态：常驻 .accessory，不占 Dock 与 Cmd+Tab（有意为之）。
-        // 入口：菜单栏图标 / 再次打开 .app（单实例 show_ui 信号）/ 遥控功能菜单「打开 MiRemote 设置」。
-        NSApp.setActivationPolicy(.accessory)
+        // Dock + 菜单栏双入口：服务运行期间始终保留 Dock 图标，
+        // 关闭设置窗口也不退出；点 Dock 图标由 applicationShouldHandleReopen 重开窗口。
+        NSApp.setActivationPolicy(.regular)
 
         var opts = AppServices.Options()
         opts.keys = true
@@ -155,10 +155,10 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let d = UserDefaults.standard
         if !d.bool(forKey: Prefs.closeNoticeAcknowledged) {
             let alert = NSAlert()
-            alert.messageText = "MiRemote 常驻菜单栏，继续工作"
+            alert.messageText = "MiRemote 常驻 Dock 与菜单栏，继续工作"
             alert.informativeText = """
-            关闭窗口不会退出：MiRemote 常驻菜单栏（不占 Dock 与 Cmd+Tab），继续控制遥控器。
-            · 想再打开设置：点菜单栏遥控器图标，或再次打开 MiRemote 应用。
+            关闭窗口不会退出：MiRemote 会保留在 Dock 和菜单栏，继续控制遥控器。
+            · 想再打开设置：点 Dock 中的 MiRemote，或点菜单栏遥控器图标。
             · 想真正退出：菜单栏图标 →「退出 MiRemote」（退出时自动恢复真实键盘）。
             · 卸载前请务必先退出，否则按键中转可能残留、影响真实键盘。
             """
@@ -174,7 +174,7 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // 关窗不退出：常驻 .accessory（启动即设，无需切换），服务照跑。
+        // 关窗不退出：Dock/菜单栏入口保留，服务照跑。
     }
 
     // MARK: 服务事件接线
