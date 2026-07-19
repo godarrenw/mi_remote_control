@@ -39,6 +39,10 @@ enum KeyRemapper {
         (0x51, 0x6F, 90,  .down),   // F20 (kVK_F20)
         (0x50, 0x68, 105, .left),   // F13 (kVK_F13)
         (0x4F, 0x53, 71,  .right),  // Keypad Clear (kVK_ANSI_KeypadClear)
+        // 音量键也需进入引擎：基础模式仍执行系统音量，AI 助手模式可复用为数字 2/3。
+        // 选用少见的小键盘除/乘作为中转，避免与普通字母数字键冲突。
+        (0x80, 0x54, 75,  .volUp),   // Keypad Divide
+        (0x81, 0x55, 67,  .volDown), // Keypad Multiply
     ]
 
     /// 只静默、不送入 MappingEngine 的设备级映射。

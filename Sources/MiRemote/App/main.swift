@@ -6,6 +6,10 @@ import AppKit
 // - 显式服务参数保持原 CLI 行为。
 // - 无参数（或 --ui-preview）进入 SwiftUI App。
 
+// 纯逻辑自检不触碰 BLE/hidutil，允许在 GUI 正在运行时并行执行（打包校验需要）。
+let startupArgs = Array(CommandLine.arguments.dropFirst())
+if startupArgs == ["--self-test"] { exit(SelfTest.run()) }
+
 // 两份进程会同时争用 hidutil / CGEventTap，因此所有模式都先获取单实例锁。
 if !HealthMonitor.acquireSingleInstanceLock() {
     print("已有实例在运行（锁文件 \(HealthMonitor.lockFilePath())），本次启动退出。")
@@ -16,7 +20,7 @@ var opts = AppServices.Options()
 var cliServiceMode = false
 var uiPreview = false
 
-var args = Array(CommandLine.arguments.dropFirst())
+var args = startupArgs
 while let argument = args.first {
     args.removeFirst()
     switch argument {

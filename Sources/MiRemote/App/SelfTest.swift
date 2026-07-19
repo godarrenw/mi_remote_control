@@ -196,6 +196,8 @@ enum SelfTest {
         expect(MappingEngine.tapRouteSelfCheck(), "M3 方向键分流快照/判定自测")
         expect(ActionRunner.selfCheck(), "ActionRunner 键表/修饰位自测")
         expect(WorkspaceActions.selfCheck(), "WorkspaceActions 工作区动作目录自测")
+        expect(Set(KeyRemapper.table.map(\.key)).isSuperset(of: [.volUp, .volDown]),
+               "音量键进入映射引擎（基础音量 / AI 数字 2、3）")
 
         // M4-1. Action JSON 编解码往返（全部新旧 case）
         do {
