@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 @MainActor
 struct ProfilePage: View {
@@ -57,12 +58,8 @@ struct ProfilePage: View {
 
                     Button("导入预设") { showPresets = true }
 
-                    Button("导入 JSON 文件") {}
-                        .disabled(true)
-                        .help("下版本提供")
-                    Button("导出 JSON") {}
-                        .disabled(true)
-                        .help("下版本提供")
+                    Button("导入 JSON 文件") { importJSON() }
+                    Button("导出 JSON") { exportJSON() }
 
                     if model.presetUndoSnapshot != nil {
                         Button("撤销本次套用") { model.undoPresetApply() }
@@ -124,6 +121,47 @@ struct ProfilePage: View {
                     .clipShape(RoundedRectangle(cornerRadius: 5))
             }
         }
+    }
+
+    private func importJSON() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.message = "选择 MiRemote 映射配置"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let imported = try JSONDecoder().decode(MappingConfig.self, from: Data(contentsOf: url))
+            guard imported.version == 1 else {
+                throw NSError(domain: "MiRemote", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "不支持配置版本 \(imported.version)，当前仅支持版本 1"])
+            }
+            model.config = imported
+            if model.config.profiles["global"] == nil { model.config.profiles["global"] = [:] }
+            model.currentProfile = "global"
+            model.saveConfig()
+        } catch {
+            showError(title: "无法导入配置", message: error.localizedDescription)
+        }
+    }
+
+    private func exportJSON() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "MiRemote-config.json"
+        panel.message = "导出当前全部映射与 Profile"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard ConfigStore.save(model.config, to: url) else {
+            showError(title: "无法导出配置", message: "请检查目标文件夹权限后重试。")
+            return
+        }
+    }
+
+    private func showError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.runModal()
     }
 }
 
