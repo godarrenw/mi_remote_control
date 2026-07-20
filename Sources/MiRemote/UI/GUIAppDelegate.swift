@@ -225,11 +225,10 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             km.engine.onEscapeHatch = { [weak self] in
                 MainActor.assumeIsolated { self?.overlayCenter?.escapeHatch() }
             }
-            let healthSeize = km.onSeizeState
-            km.onSeizeState = { [weak self] ok in
-                healthSeize?(ok)
-                DispatchQueue.main.async { self?.model.noteSeize(ok) }
-            }
+            // model.degraded 只经 services.health.onChange（下方已接线）单一来源写入——
+            // 它汇总 tap/映射/权限/蓝牙四个健康源；km.onSeizeState 在 AppServices.start()
+            // 里已接到 health.setTapAlive，这里不再叠加一层直接覆盖 degraded 的旁路，
+            // 否则两个写者互相打架：tap 一恢复就把「映射仍缺失」的真实故障态错误地清成正常。
             km.onButtonEvent = { [weak self] ev in
                 DispatchQueue.main.async { self?.model.noteButton(ev) }
             }

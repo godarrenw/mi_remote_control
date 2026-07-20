@@ -356,19 +356,15 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         let (wantSwitch, wantDoubao): (Bool, Bool) = {
             cfgLock.lock(); defer { cfgLock.unlock() }
             sessionActive = true
-            sessionSwitchedMic = _switchInput
+            sessionSwitchedMic = false   // 真正切换后才置位，见 atvvAudioFrame 的 pendingMicSwitch 分支
             sessionDoubao = _doubao
             return (_switchInput, _doubao)
         }()
-        if wantSwitch {
-            let engaged = DefaultInput.engage(deviceName: micDeviceName)
-            if !engaged { cfgLock.lock(); sessionSwitchedMic = false; cfgLock.unlock() }
-            log(engaged
-                ? "默认麦克风 → \(micDeviceName)"
-                : "切换默认麦克风失败（未找到 \(micDeviceName)*，未装虚拟声卡？语音出字不可用，按键功能不受影响）")
-        }
-        // 抖动幽灵会话（有 START/STOP 但零音频帧）不触发语音工具：
-        // 等第一个音频帧到达再触发，幽灵会话就永远碰不到豆包。
+        // 抖动幽灵会话（有 START/STOP 但零音频帧）不做任何有副作用的操作：
+        // 麦克风切换和豆包触发一样，等第一个真实音频帧到达再执行——否则遥控器
+        // BLE START/STOP 每次抖动都会拿系统默认输入设备开刀一次，Bluetooth 耳机
+        // 据此重新协商音频 profile，每次都炸出一下可闻的杂音。
+        pendingMicSwitch = wantSwitch
         pendingTrigger = wantDoubao
         cfgLock.lock(); triggered = false; cfgLock.unlock()
         decoder.reset(predictor: 0, stepIndex: 0)
@@ -377,12 +373,14 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
     }
 
     private var restoreWork: DispatchWorkItem?
+    private var pendingMicSwitch = false
     private var pendingTrigger = false
     private var triggered = false
 
     func atvvVoiceStopped() {
         log("语音结束")
         onVoiceActive?(false)
+        pendingMicSwitch = false
         pendingTrigger = false
         let (didSwitch, didDoubao, didTrigger): (Bool, Bool, Bool) = {
             cfgLock.lock(); defer { cfgLock.unlock() }
@@ -411,6 +409,7 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         let hadPendingMicRestore = restoreWork != nil
         restoreWork?.cancel()
         restoreWork = nil
+        pendingMicSwitch = false
         pendingTrigger = false
         let (active, didSwitch): (Bool, Bool) = {
             cfgLock.lock(); defer { cfgLock.unlock() }
@@ -434,6 +433,14 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
     }
 
     func atvvAudioFrame(_ frame: Data, sync: (predictor: Int16, stepIndex: Int)?) {
+        if pendingMicSwitch {
+            pendingMicSwitch = false
+            let engaged = DefaultInput.engage(deviceName: micDeviceName)
+            cfgLock.lock(); sessionSwitchedMic = engaged; cfgLock.unlock()
+            log(engaged
+                ? "默认麦克风 → \(micDeviceName)"
+                : "切换默认麦克风失败（未找到 \(micDeviceName)*，未装虚拟声卡？语音出字不可用，按键功能不受影响）")
+        }
         if pendingTrigger {
             pendingTrigger = false
             cfgLock.lock(); triggered = true; cfgLock.unlock()

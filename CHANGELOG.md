@@ -9,6 +9,30 @@
 
 - 待补充。
 
+## [0.2.0] — 2026-07-20
+
+### 新增
+
+- Home 单按直接进入调度中心，支持左右键跨桌面切换；菜单键窗口选择器改为
+  三段流程（全局 App/桌面 → 当前 App → 关闭），默认优先全局范围。
+- 支持 App 的默认映射不再覆盖 Home/菜单基础语义；常驻 Dock + 菜单栏双入口，
+  关闭设置窗口不退出服务；系统功能菜单精简。
+- 各模式（窗口选择/系统菜单/教程/App 轮盘/鼠标模式/锁定控制层）统一空闲自动退出。
+
+### 修复
+
+- **事件注入通道彻底失效后无法自愈**：`CGEventTap` 创建失败或被系统摧毁（非「被禁用」，
+  是连 `CFMachPort` 都不在了）时，30 秒健康检查与体检页「重建通道」按钮此前都会直接
+  放弃处理——按键映射全部失灵后只能靠手动退出重开 App 才能恢复。现在两条路径都会先
+  尝试重建 `CGEventTap` 本身，再重装 `hidutil` 中转映射。
+- **体检页「事件注入通道」状态误报**：`model.degraded` 此前被两套独立逻辑同时写入
+  （健康监控的综合判定 + tap 独占状态的直接覆盖），互相打架，可能把「hidutil 映射仍缺失」
+  的真实故障态错误地清成正常。现在只保留健康监控这一个权威来源。
+- **语音键触发的耳机杂音**：默认麦克风切换到 BlackHole 之前没有像豆包触发键一样等第一个
+  真实音频帧，遥控器 BLE START/STOP 抖动会导致每次抖动都强行切一次系统默认输入设备，
+  是 Bluetooth 耳机反复重新协商音频 profile 从而产生杂音的直接原因。现在麦克风切换与
+  豆包触发共用同一套「等首帧」防抖，消除了抖动导致的重复触发。
+
 ## [0.1.0] — 2026-07-19
 
 首个公开预览版：把小米蓝牙遥控器 2 Pro 变成 macOS 的全能控制台。
@@ -44,5 +68,6 @@
 - 语音输入需另装 BlackHole 2ch 与豆包输入法。
 - Secure Input（密码输入）期间方向键可能以中转键泄漏进前台，v1 接受此限制。
 
-[未发布]: https://github.com/godarrenw/mi_remote_control/compare/v0.1.0...HEAD
+[未发布]: https://github.com/godarrenw/mi_remote_control/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/godarrenw/mi_remote_control/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/godarrenw/mi_remote_control/releases/tag/v0.1.0

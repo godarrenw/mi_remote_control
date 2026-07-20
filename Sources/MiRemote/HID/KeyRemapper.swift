@@ -311,7 +311,9 @@ final class TapEngine: @unchecked Sendable {
         self.delegate = delegate
     }
 
-    func start() {
+    /// 创建 CGEventTap + run-loop source（不做任何生命周期赋值，供 start/健康检查/
+    /// 重装复用）。失败（通常是辅助功能权限缺失）返回 nil。
+    private func makeTap() -> (CFMachPort, CFRunLoopSource?)? {
         let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
                               | (1 << CGEventType.keyUp.rawValue)
                               | (1 << CGEventType.tapDisabledByTimeout.rawValue)
@@ -324,23 +326,33 @@ final class TapEngine: @unchecked Sendable {
                 let me = Unmanaged<TapEngine>.fromOpaque(userInfo!).takeUnretainedValue()
                 return me.handle(type: type, event: ev)
             },
-            userInfo: selfPtr) else {
-            delegate?.hidLog("TAP 创建失败（需辅助功能权限），清理可能残留的 hidutil 映射")
-            // 上次异常退出可能残留映射；tap 起不来绝不留映射。
-            // uninstall 此时无快照——按现状只剔除本程序条目，不动第三方映射。
-            healthQueue.sync { _ = KeyRemapper.uninstall() }
-            delegate?.hidSeizeState(false)
-            return
-        }
+            userInfo: selfPtr) else { return nil }
         let rls = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), rls, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        return (tap, rls)
+    }
+
+    func start() {
+        guard let (tap, rls) = makeTap() else {
+            delegate?.hidLog("TAP 创建失败（需辅助功能权限），清理可能残留的 hidutil 映射")
+            // 上次异常退出可能残留映射；tap 起不来绝不留映射。
+            // uninstall 此时无快照——按现状只剔除本程序条目，不动第三方映射。
+            healthQueue.sync {
+                _ = KeyRemapper.uninstall()
+                // tap 创建失败不代表引擎不该运行——起健康定时器，30s 后自动重试
+                // 重建 tap（否则「所有按键失灵」只能靠用户手动重启 App 才能恢复）。
+                startHealthTimerOnce()
+            }
+            delegate?.hidSeizeState(false)
+            return
+        }
         let installed: Bool = healthQueue.sync {
             self.tap = tap
             self.runLoopSource = rls
             let ok = KeyRemapper.install()
             stateLock.withLock { $0.mappingInstalled = ok }
-            startHealthTimer()
+            startHealthTimerOnce()
             return ok
         }
         onMappingState?(installed)
@@ -405,13 +417,27 @@ final class TapEngine: @unchecked Sendable {
     }
 
     /// 幂等重装 hidutil 映射（蓝牙重连 / 系统唤醒后调用：设备服务重建后映射可能失效）。
-    /// tap 未运行时不做事（避免制造「映射在、过滤器不在」泄漏态）；暂停期间豁免。
+    /// 暂停期间豁免。tap 已经死掉（创建失败/被系统摧毁且未恢复）时，先尝试重建 tap
+    /// 本身——否则「事件注入通道」整条链路死透，光重装 hidutil 映射毫无意义，
+    /// 体检页的「重建通道」按钮会变成按了没反应。
     func reinstallMapping(reason: String) {
         healthQueue.async { [weak self] in
-            guard let self, self.tap != nil else { return }
+            guard let self else { return }
             if self.stateLock.withLock({ $0.suspended }) {
                 self.delegate?.hidLog("遥控已暂停，跳过映射重装（\(reason)）")
                 return
+            }
+            if self.tap == nil {
+                guard let (tap, rls) = self.makeTap() else {
+                    self.delegate?.hidLog("映射重装失败：TAP 重建失败（\(reason)），请检查辅助功能权限或重新打开 App")
+                    return
+                }
+                self.tap = tap
+                self.runLoopSource = rls
+                self.resetPressState()
+                self.router?.resetInputState(reason: "重装映射时重建 TAP")
+                self.delegate?.hidSeizeState(true)
+                self.delegate?.hidLog("TAP 已重建（\(reason)）")
             }
             let ok = KeyRemapper.install()
             self.stateLock.withLock { $0.mappingInstalled = ok }
@@ -449,7 +475,10 @@ final class TapEngine: @unchecked Sendable {
 
     // MARK: - 失效安全
 
-    private func startHealthTimer() {
+    /// 幂等：已有定时器时不重复创建（tap 创建失败分支与成功分支都会调用它，
+    /// 必须在 healthQueue 上执行才安全）。
+    private func startHealthTimerOnce() {
+        guard healthTimer == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: healthQueue)
         t.schedule(deadline: .now() + 30, repeating: 30)
         t.setEventHandler { [weak self] in self?.healthCheck() }
@@ -458,10 +487,28 @@ final class TapEngine: @unchecked Sendable {
     }
 
     private func healthCheck() {
-        guard let tap else { return }
-        let (installed, suspended) = stateLock.withLock { ($0.mappingInstalled, $0.suspended) }
-        // 暂停期间映射被有意卸载——不是故障，健康检查不做任何自动重装/恢复动作。
+        let suspended = stateLock.withLock { $0.suspended }
         if suspended { return }
+        guard let tap else {
+            // tap 从未建成或已彻底死亡（不是「被禁用」，是 CFMachPort 都不在）：
+            // 每 30s 重试重建，否则「事件注入通道」死透后只能靠用户手动重启 App。
+            guard let (newTap, rls) = makeTap() else {
+                delegate?.hidLog("健康检查：TAP 重建失败，30s 后重试")
+                return
+            }
+            self.tap = newTap
+            self.runLoopSource = rls
+            resetPressState()
+            router?.resetInputState(reason: "健康检查重建 TAP")
+            let ok = KeyRemapper.install()
+            stateLock.withLock { $0.mappingInstalled = ok }
+            onMappingState?(ok)
+            delegate?.hidSeizeState(true)
+            delegate?.hidLog(ok ? "健康检查：TAP 已重建，hidutil 映射已重装"
+                                 : "健康检查：TAP 已重建，但 hidutil 映射安装失败")
+            return
+        }
+        let installed = stateLock.withLock { $0.mappingInstalled }
         if CGEvent.tapIsEnabled(tap: tap) {
             // tap 健康。若此前因失效卸载过映射，恢复后自动重装。
             if Self.shouldAutoReinstall(suspended: suspended, tapEnabled: true,

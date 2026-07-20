@@ -437,7 +437,6 @@ final class AppModel: ObservableObject {
 
     func noteVoice(_ active: Bool) { voiceActive = active }
     func noteBattery(_ pct: Int) { batteryPercent = pct }
-    func noteSeize(_ ok: Bool) { degraded = !ok }
 
     /// 层 2 角标/浮层展示用的前台 App 名（引擎未跑时为 nil）。
     var frontAppNameForBadge: String? {
