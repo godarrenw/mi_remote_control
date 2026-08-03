@@ -22,7 +22,8 @@ VOL_NAME="MiRemote"
 ALLOW_UNSIGNED=0
 [ "${1:-}" = "--unsigned" ] && ALLOW_UNSIGNED=1
 
-[ -d "$APP" ] || { echo "❌ 找不到 $APP，先跑 scripts/package.sh（或 --unsigned 预览需自行放置 .app）" >&2; exit 1; }
+# 花括号必需：$APP 紧跟全角逗号时 bash 3.2 会吞掉多字节首字节（见 package.sh 同类注释）。
+[ -d "$APP" ] || { echo "❌ 找不到 ${APP}，先跑 scripts/package.sh（或 --unsigned 预览需自行放置 .app）" >&2; exit 1; }
 
 # ---- 签名闸门：正式流程要求有效签名；--unsigned 显式跳过 ----
 # check_dr <app路径>：Designated Requirement 必须锚定 certificate leaf 且不含 cdhash。
@@ -52,7 +53,9 @@ check_dr() {
     # “有 certificate leaf”还不够：另一张证书重签也会让 TCC 身份变化。
     # 精确比较 app 叶证书与钥匙串固定 MiRemote Dev 证书的 DER SHA-256。
     cert_tmp="$(mktemp -d)"
-    if ! codesign -d --extract-certificates "$cert_tmp/app-cert" "$1" >/dev/null 2>&1 \
+    # 前缀必须用 = 连写：macOS 26 的 codesign 把 --extract-certificates 的参数当成可选，
+    # 空格形式会把下一个 token 解析成待验证的 bundle 路径，报 "<前缀>: No such file or directory"。
+    if ! codesign -d "--extract-certificates=$cert_tmp/app-cert" "$1" >/dev/null 2>&1 \
         || [ ! -f "$cert_tmp/app-cert0" ]; then
         echo "❌ 错误：无法提取 app 叶证书。" >&2
         rm -rf "$cert_tmp"

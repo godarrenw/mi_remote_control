@@ -65,12 +65,21 @@ if [ -f "Resources/default-config.json" ]; then
     cp Resources/default-config.json "$APP/Contents/Resources/"
 fi
 
+# ---- 3.5 清理 AppleDouble 旁车文件 ----
+# 非 APFS/HFS+ 的检出目录（exFAT U 盘、网络盘等）不支持扩展属性，macOS 会把每个
+# xattr 落成同名 ._ 旁车文件。目录的旁车（Contents/._Resources 之类）会被 codesign
+# 当成 bundle 里未签名的子组件，直接报 "code object is not signed at all"。
+# 签名前清掉；APFS 上这条 find 匹配不到任何东西，是空操作。
+find "$APP" -name '._*' -delete 2>/dev/null || true
+
 # ---- 4. 签名（从内到外；当前无嵌套 framework/helper，签 bundle 即含主可执行） ----
 if [ "$UNSIGNED" = "1" ]; then
     echo "⚠️  --unsigned：ad-hoc 签名（CI/预览通道，TCC 授权不跨版本存活）"
     codesign --force --identifier "$BUNDLE_ID" --sign - "$APP"
 else
-    echo "-- 签名（证书: $CERT_CN, identifier: $BUNDLE_ID）"
+    # ${VAR} 必须加花括号：紧跟中文全角字符时，bash 3.2 在 UTF-8 locale（如 en_HK.UTF-8）
+    # 下会把多字节字符的首字节当成变量名的一部分，set -u 即报 "BUNDLE_ID<乱码>: unbound variable"。
+    echo "-- 签名（证书: ${CERT_CN}, identifier: ${BUNDLE_ID}）"
     codesign --force \
         --identifier "$BUNDLE_ID" \
         --sign "$CERT_CN" \

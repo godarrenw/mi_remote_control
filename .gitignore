@@ -10,3 +10,7 @@ dist/
 .omc/
 .claude/worktrees/
 .DS_Store
+
+# AppleDouble 旁车文件：检出目录在 exFAT/网络盘等不支持扩展属性的卷上时，
+# macOS 会给每个文件/目录生成同名 ._ 文件（还会混进 .app 破坏 codesign）。
+._*

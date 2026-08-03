@@ -30,7 +30,8 @@ note() { echo "  $1"; }
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1" >&2; FAIL=1; }
 
-[ -d "$APP" ] || { echo "❌ 找不到 $APP，先跑 scripts/package.sh" >&2; exit 1; }
+# 花括号必需：$APP 紧跟全角逗号时 bash 3.2 会吞掉多字节首字节（见 package.sh 同类注释）。
+[ -d "$APP" ] || { echo "❌ 找不到 ${APP}，先跑 scripts/package.sh" >&2; exit 1; }
 
 # 1. 签名验证
 if codesign --verify --strict --verbose=2 "$APP" 2>/dev/null; then
