@@ -151,6 +151,29 @@ func migrateConfigIfNeeded(_ input: MappingConfig) -> MappingConfig {
         cfg.profiles["global"] = g
         cfg.version = 7
     }
+    if cfg.version < 8 {
+        // v8：飞书聊天与会议是同一个 App，旧「飞书会议」预设把 tv.tap 占成静音，
+        // 槽级覆盖直接盖掉 global 的「TV=进/出 App 控制模式」——结果是飞书里
+        // 按 TV 只发静音、进不了控制模式，连带控制模式 HUD/提示条也永远不出现。
+        // 这里把 TV 归还给控制模式，静音搬进控制模式的菜单键。
+        // 只回收「值仍等于老预设」的那一条，用户改成别的一律不动。
+        let bundle = "com.electron.lark"
+        let legacyMute = Action.keyStroke(key: "d", mods: ["left_option", "left_shift"])
+        if var profile = cfg.profiles[bundle], profile["tv"]?.tap == legacyMute {
+            var tv = profile["tv"] ?? KeyBinding()
+            tv.tap = nil
+            profile["tv"] = tv
+            var menu = profile["menu"] ?? KeyBinding()
+            var layers = menu.layers ?? [:]
+            if layers["2"] == nil { layers["2"] = legacyMute }   // 用户已占用则不动
+            menu.layers = layers
+            profile["menu"] = menu
+            cfg.profiles[bundle] = profile
+        }
+        // 合并后的飞书预设按 slot 级补齐（force=false，不覆盖用户已设的槽位）。
+        Presets.apply(Presets.feishu, to: &cfg)
+        cfg.version = 8
+    }
     return cfg
 }
 

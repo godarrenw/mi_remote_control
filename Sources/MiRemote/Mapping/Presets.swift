@@ -376,18 +376,27 @@ enum Presets {
         ]
     )
 
-    /// 飞书：TV=静音（bundle id 与 Mac 修饰键映射待实测）
+    /// 飞书：聊天与会议是同一个 App（com.electron.lark），必须合成一个 profile——
+    /// 拆成两个预设会互相覆盖同名 base 槽（旧「飞书会议」预设把 tv.tap 占成静音，
+    /// 直接盖掉 global 的 tv=进/出 App 控制模式，导致飞书里根本进不了控制模式）。
     static let feishu = Preset(
-        id: "meeting_feishu",
-        displayName: "飞书会议",
+        id: "chat_feishu",
+        displayName: "飞书",
         note: """
-        TV=会议麦克风静音（官方 Alt+Shift+D，Mac 侧按 Option+Shift+D 合成）。\
-        bundle id（com.electron.lark）与 Mac 修饰键映射均【待实测】，接线前请在 App 内 Cmd+/ 快捷键列表实机确认。
+        OK=发送（⌘+Enter，对应飞书设置里的「⌘+Enter 发送」；若你用默认 Enter 发送，把 OK 改回 Enter 即可）。\
+        控制模式内：菜单=会议麦克风静音（官方 Alt+Shift+D → Mac 侧 Option+Shift+D）、Home=搜索(⌘K)、\
+        音量±=切标签。TV 键不再被静音占用，留给「进/出控制模式」的全局语义。\
+        静音快捷键【待实测】，可在 App 内 ⌘/ 快捷键列表确认。
         """,
         bundleID: "com.electron.lark",
         bindings: [
+            // 基础态 OK=发送：飞书把发送设成 ⌘+Enter 时，遥控 OK 必须跟着带 Cmd，
+            // 否则只是在输入框里换行。引擎对 OK 的 per-app 显式覆盖放行（见 MappingEngine.overlayDeclared）。
+            "ok": KeyBinding(tap: ks("return", ["left_cmd"])),
             // vibe 调研 §3.1：会议开关麦克风 = Alt+Shift+D（官方文档），非 Zoom 的 Cmd+Shift+A。
-            "tv": KeyBinding(tap: ks("d", ["left_option", "left_shift"])),
+            // 放进控制模式（层2）而非 base 槽：base 的菜单键要留给窗口选择器。
+            "menu": KeyBinding(layers: ["2": ks("d", ["left_option", "left_shift"])]),
+            "home": KeyBinding(layers: ["2": ks("k", ["left_cmd"])]),
         ]
     )
 

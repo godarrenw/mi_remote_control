@@ -880,6 +880,23 @@ enum SelfTest {
             let rows = OverlayCenter.controlModeRows(config: cfg, profile: "global")
             expect(rows.count >= 5 && rows.last?.1 == "退出控制模式",
                    "控制模式 HUD 键位表数据源")
+
+            // 飞书能进控制模式：TV base 槽不被 per-app 覆盖，且该 App 有自己的层2 键位。
+            let larkRows = OverlayCenter.controlModeRows(config: cfg, profile: "com.electron.lark")
+            expect(cfg.profiles["com.electron.lark"]?["tv"]?.tap == nil
+                   && cfg.profiles["global"]?["tv"]?.tap == .layerToggle(2)
+                   && larkRows.contains { $0.1.contains("⌥") && $0.1.contains("⇧") },
+                   "飞书 TV 仍进控制模式，且 HUD 列出飞书静音")
+
+            // profile 切换提示条：飞书列 OK，未覆盖基础态的 App 不打扰。
+            // 端到端：默认配置下切到飞书，按一次 OK 必须真的发出 ⌘Return（用户实际场景）。
+            expect(MappingEngine.baseOverrideSelfCheck(), "飞书 OK 短按端到端产出 ⌘Return")
+
+            let larkHints = HintBarCatalog.hints(forBaseProfile: "com.electron.lark", config: cfg)
+            expect(larkHints.count == 1 && larkHints[0].keys == [.ok]
+                   && larkHints[0].text.contains("⌘")
+                   && HintBarCatalog.hints(forBaseProfile: "us.zoom.xos", config: cfg).isEmpty,
+                   "profile 切换提示条：飞书提示 OK=⌘Return，Zoom 无基础覆盖不提示")
         }
 
         // v2-6. v3→当前版本迁移：心智模型 v2 + Home 单按调度中心。
@@ -931,10 +948,33 @@ enum SelfTest {
             old.profiles["global"]?["home"]?.tap = .system("show_desktop")
             old.profiles["global"]?["home"]?.double = .system("mission_control")
             let cfg = migrateConfigIfNeeded(old)
-            expect(cfg.version == 7
+            expect(cfg.version == MappingConfig.currentVersion
                    && cfg.profiles["global"]?["home"]?.tap == .system("mission_control")
                    && cfg.profiles["global"]?["home"]?.double == nil,
                    "v6→v7 Home 单按调度中心且无双击等待")
+        }
+
+        // v2-9. v7→v8：飞书 TV 键归还控制模式，静音搬进控制模式菜单；用户改过的不动。
+        do {
+            let mute = Action.keyStroke(key: "d", mods: ["left_option", "left_shift"])
+            var old = defaultConfig()
+            old.version = 7
+            old.profiles["com.electron.lark"] = ["tv": KeyBinding(tap: mute)]
+            let cfg = migrateConfigIfNeeded(old)
+            let lark = cfg.profiles["com.electron.lark"]
+            expect(cfg.version == MappingConfig.currentVersion
+                   && lark?["tv"]?.tap == nil
+                   && lark?["menu"]?.layers?["2"] == mute
+                   && lark?["ok"]?.tap == .keyStroke(key: "return", mods: ["left_cmd"]),
+                   "v7→v8 飞书 TV 归还控制模式、静音搬到控制模式菜单、OK=⌘Enter")
+
+            // 用户把 TV 改成了别的动作 → 迁移不得回收（只认老预设原值）。
+            var custom = defaultConfig()
+            custom.version = 7
+            custom.profiles["com.electron.lark"] = ["tv": KeyBinding(tap: .focusInput)]
+            let kept = migrateConfigIfNeeded(custom)
+            expect(kept.profiles["com.electron.lark"]?["tv"]?.tap == .focusInput,
+                   "v7→v8 用户自改的飞书 TV 绑定不被迁移覆盖")
         }
 
         // v2-7. v5→v6：只清理内置支持 App 的 Home/菜单基础槽，并搬入层2。
@@ -1117,8 +1157,12 @@ enum SelfTest {
                    && Presets.chatGPT.bundleID == "com.openai.chat"
                    && Presets.chatGPT.bindings["menu"]?.layers?["2"] == .keyStroke(key: "k", mods: ["left_cmd"]),
                    "ChatGPT 桌面预设（控制模式菜单=Cmd+K）")
-            expect(Presets.feishu.bindings["tv"]?.tap == .keyStroke(key: "d", mods: ["left_option", "left_shift"]),
-                   "飞书静音=Option+Shift+D（官方 Alt+Shift+D）")
+            expect(Presets.feishu.bundleID == "com.electron.lark"
+                   && Presets.feishu.bindings["menu"]?.layers?["2"]
+                       == .keyStroke(key: "d", mods: ["left_option", "left_shift"])
+                   && Presets.feishu.bindings["tv"] == nil
+                   && Presets.feishu.bindings["ok"]?.tap == .keyStroke(key: "return", mods: ["left_cmd"]),
+                   "飞书：OK=⌘Enter 发送、静音进控制模式菜单、TV 归还控制模式")
             expect(Presets.weChat.bindings["menu"]?.layers?["2"] != nil
                    && Presets.weChat.bindings["menu"]?.tap == nil,
                    "微信控制模式菜单=文件传输助手宏且不占菜单 base 槽")
