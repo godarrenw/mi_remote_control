@@ -534,8 +534,9 @@ final class MappingEngine: @unchecked Sendable {
         if layer != 0, let layered = b?.layers?["\(layer)"] {
             action = layered
         } else if layer == 0, key == .ok {
-            // 基础状态固定为系统确认/换行；App Profile 只能在功能模式中覆盖。
-            action = .keyStroke(key: "return", mods: [])
+            // 基础状态默认是系统确认/换行；仅 per-app profile 的显式覆盖可改写
+            //（如飞书设了「Cmd+Enter 发送」）。global 改不动——见 overlayDeclared。
+            action = overlayDeclared(.ok)?.tap ?? .keyStroke(key: "return", mods: [])
         } else if layer == 0, key == .back {
             // 无论是否启用长按删除全部，短按都必须是普通 Delete。
             action = .keyStroke(key: "delete", mods: [])
@@ -617,6 +618,21 @@ final class MappingEngine: @unchecked Sendable {
 
     // MARK: - 绑定解析与工具
 
+    /// per-app overlay 对某键的【显式】声明（继承自 global 的值不算）。
+    ///
+    /// 基础文字输入态里只有 **OK 的短按** 认这种覆盖：OK 的语义恒为「确认/发送」，
+    /// per-app 换个发送键（如飞书的 ⌘+Enter）不改变这颗键的心智模型；而 global 改不动，
+    /// 一次误设不会污染所有 App。此前连 per-app 的显式设置也整条忽略——GUI 允许设、
+    /// config.json 存得下、引擎运行时丢弃，用户只看到「设了没用」。
+    ///
+    /// 方向键与返回键**不**走这条放行：它们在基础态必须保持光标/删除语义，
+    /// 而内置预设（Ghostty/浏览器/微信…）的 base 槽里躺着 back=Esc、左右=切标签一类
+    /// 的历史绑定，一旦放行会让文字输入态突然删不了字、移不了光标。
+    /// 这些 App 专属动作的正确归属是控制模式（layers["2"]）。
+    private func overlayDeclared(_ key: RemoteKey) -> KeyBinding? {
+        activeOverlay?[key.rawValue]
+    }
+
     /// per-app overlay 只覆盖声明的键，其余继承 global。
     private func binding(for key: RemoteKey) -> KeyBinding? {
         let name = key.rawValue
@@ -640,6 +656,8 @@ final class MappingEngine: @unchecked Sendable {
 
     /// 基础文字输入态不允许 Profile 通过 double 槽绕过方向/确认/删除保护。
     /// OK 的 layerToggle 仍是明确进入第二功能的入口，因此保留。
+    /// 注意 OK 的 double 不随 tap 一起放开：给 OK 配双击会让「发送」这颗高频键
+    /// 吃满 doubleMs 判定延迟，违反 DESIGN §3.1b「不靠双击做高频操作」。
     private func doubleAction(for key: RemoteKey) -> Action? {
         let action = binding(for: key)?.double
         guard effectiveLayer == 0 else { return action }
@@ -857,7 +875,10 @@ extension MappingEngine {
             TransientSystemUI.clearMissionControlExit()
         }
 
-        // 场景 F2：基础态 OK/back 的 App overlay 不能篡改；长按清空仅由显式设置开启。
+        // 场景 F2：基础态的覆盖规则——
+        //   · OK 短按：per-app 显式声明放行（飞书 ⌘+Enter 发送这类需求）；
+        //   · back 与 OK 双击：仍然一律受保护，overlay 改不动；
+        //   · 长按清空返回仍只由 deleteAllOnHold 显式开启。
         do {
             var cfg = makeTestConfig()
             cfg.profiles["com.example.unsafe"] = [
@@ -872,9 +893,25 @@ extension MappingEngine {
             e.setActiveProfile("com.example.unsafe")
             down(e, .ok); c.advance(10); up(e, .ok)
             down(e, .back); c.advance(10); up(e, .back)
-            expect(r.actions == [.keyStroke(key: "return", mods: []),
+            // OK 立即产出 overlay 的 tap（没有等满 doubleMs）——同时证明 ok.double 被吞：
+            // 若 double 生效，tap 会被推迟到双击窗口结束。
+            expect(r.actions == [.shell("unsafe-ok"),
                                  .keyStroke(key: "delete", mods: [])],
-                   "F2 base confirm/delete ignore unsafe overlay")
+                   "F2 per-app OK tap 生效、back 仍受保护、OK double 仍被吞")
+
+            // global 改不动基础语义：同样的 tap 写在 global 上必须无效。
+            do {
+                var g = cfg
+                g.profiles["global"]?["ok"]?.tap = .shell("global-ok")
+                g.profiles["com.example.unsafe"] = nil
+                let c2 = ManualClock()
+                let r2 = RecordingRunner()
+                let e2 = MappingEngine(config: g, runner: r2, delegate: nil,
+                                       dispatch: { $0() }, scheduleAfter: { ms, work in c2.schedule(ms, work) })
+                down(e2, .ok); c2.advance(10); up(e2, .ok)
+                expect(r2.actions == [.keyStroke(key: "return", mods: [])],
+                       "F2 global 的 OK tap 仍被基础态保护挡下")
+            }
 
             cfg.settings.deleteAllOnHold = true
             e.setConfig(cfg)
@@ -1051,6 +1088,40 @@ extension MappingEngine {
     }
 
     /// resetInputState 加固自测：瞬时层回落、OK 物理态清除、在途定时器作废、孤儿 keyUp 无副作用。
+    /// 基础态 per-app 覆盖的端到端自测：用【真实默认配置】（含飞书预设）走完
+    /// setActiveProfile → 按 OK → 产出动作 的完整链路，钉死用户的实际场景。
+    /// 单独成一条是因为 makeTestConfig 是简化配置，测不到预设与引擎规则的接缝。
+    static func baseOverrideSelfCheck() -> Bool {
+        var ok = true
+        func expect(_ cond: Bool, _ msg: String) {
+            if !cond { ok = false; print("[MappingEngine.baseOverrideSelfCheck] FAIL: \(msg)") }
+        }
+        let clock = ManualClock()
+        let runner = RecordingRunner()
+        let engine = MappingEngine(config: defaultConfig(),
+                                   runner: runner,
+                                   delegate: nil,
+                                   dispatch: { $0() },
+                                   scheduleAfter: { ms, work in clock.schedule(ms, work) })
+        func tapOK() {
+            engine.handle(ButtonEvent(key: .ok, isDown: true, timeNs: 0))
+            clock.advance(10)
+            engine.handle(ButtonEvent(key: .ok, isDown: false, timeNs: 0))
+        }
+        // 飞书：OK = ⌘Return（飞书设置为「⌘+Enter 发送」时才发得出去）。
+        engine.setActiveProfile("com.electron.lark")
+        tapOK()
+        expect(runner.actions == [.keyStroke(key: "return", mods: ["left_cmd"])],
+               "飞书 OK 产出 ⌘Return，实得 \(runner.actions)")
+        // 切走后立刻回到基础语义，不残留上一个 App 的覆盖。
+        runner.actions.removeAll()
+        engine.setActiveProfile("com.apple.TextEdit")
+        tapOK()
+        expect(runner.actions == [.keyStroke(key: "return", mods: [])],
+               "切走后 OK 回到普通 Return，实得 \(runner.actions)")
+        return ok
+    }
+
     static func resetSelfCheck() -> Bool {
         var ok = true
         func expect(_ cond: Bool, _ msg: String) {
