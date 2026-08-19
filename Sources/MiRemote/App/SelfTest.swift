@@ -193,6 +193,44 @@ enum SelfTest {
             expect(out.count == 3 && out.last == 32767, "增益放大 clamp")
         }
 
+        // 固件 2671 真机回归：这些字节来自同 VID/PID 遥控器的 GATT 抓包。
+        // 测试直接调用 ATVVBridge 运行时采用的纯协议入口，锁住写入属性和字段偏移。
+        do {
+            expect(ATVVBridge.preferredWriteType(for: [.writeWithoutResponse]) == .withoutResponse,
+                   "ATVV TX 遵循 writeWithoutResponse 特征属性")
+            expect(ATVVBridge.preferredWriteType(for: [.write]) == .withResponse,
+                   "ATVV TX 保留 write-with-response 回退")
+
+            let caps2671: [UInt8] = [0x0B, 0x01, 0x00, 0x02, 0x00, 0x00, 0x78, 0x00, 0x00]
+            let parsed2671 = ATVVBridge.parseCapabilities(caps2671)
+            expect(parsed2671?.version == 0x0100
+                   && parsed2671?.codecMask == 0x02
+                   && parsed2671?.frameSize == 120,
+                   "固件 2671 能力帧识别 16kHz/120B", "\(String(describing: parsed2671))")
+
+            let capsV10: [UInt8] = [0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78]
+            expect(ATVVBridge.parseCapabilities(capsV10)?.codecMask == 0x02,
+                   "ATVV v1 codec 字段只读 byte[3]")
+
+            let capsLegacy: [UInt8] = [0x0B, 0x00, 0x01, 0x00, 0x02, 0x00, 0x78]
+            expect(ATVVBridge.parseCapabilities(capsLegacy)?.codecMask == 0x02,
+                   "旧版 CAPS codec 低字节布局仍兼容")
+
+            let streamStart: [UInt8] = [0x04, 0x03, 0x02, 0x7A]
+            expect(ATVVBridge.parseStreamSessionID(streamStart) == 0x7A,
+                   "AUDIO_START stream ID 读取 byte[3]")
+
+            let syncFrame: [UInt8] = [0x0A, 0x02, 0x00, 0x05, 0x12, 0x34, 0x21]
+            let sync = ATVVBridge.parseSync(syncFrame)
+            expect(sync?.predictor == Int16(0x1234) && sync?.stepIndex == 0x21,
+                   "AUDIO_SYNC predictor/step 读取 byte[4...6]")
+
+            expect(ATVVBridge.microphoneOpenCommand(version: 0x0100, codec: 0x02)
+                   == [0x0C, 0x00], "ATVV v1 MIC_OPEN 布局")
+            expect(ATVVBridge.microphoneCloseCommand(version: 0x0100, sessionID: 0x7A)
+                   == [0x0D, 0x7A], "ATVV v1 MIC_CLOSE 使用单字节 stream ID")
+        }
+
         // M2 模块自测
         expect(MappingEngine.selfCheck(), "MappingEngine 状态机自测")
         expect(MappingEngine.tapRouteSelfCheck(), "M3 方向键分流快照/判定自测")

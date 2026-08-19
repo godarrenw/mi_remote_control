@@ -15,6 +15,60 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     weak var delegate: ATVVBridgeDelegate?
 
+    /// 纯协议值对象与解析入口。运行时和 `--self-test` 共用同一条路径，避免真机协议
+    /// 修复只落在测试替身上。
+    struct Capabilities: Equatable {
+        let version: UInt16
+        let codecMask: UInt16
+        let frameSize: Int
+    }
+
+    static func preferredWriteType(for properties: CBCharacteristicProperties) -> CBCharacteristicWriteType {
+        properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+    }
+
+    static func parseCapabilities(_ bytes: [UInt8]) -> Capabilities? {
+        guard bytes.count >= 7, bytes[0] == 0x0B else { return nil }
+        let version = be16(bytes, 1)
+        var codecMask = UInt16(bytes[3])
+        // 旧布局把 codec 掩码放在低字节 byte[4]；仅在 byte[3] 没有 16kHz 位时回退，
+        // 避免把固件 2671 的保留字节误并入掩码，也不回归已支持的遥控器。
+        if codecMask & 0x02 == 0, bytes[4] & 0x02 != 0 {
+            codecMask = UInt16(bytes[4])
+        }
+        guard codecMask & 0x02 != 0 else { return nil }
+        let frame = be16(bytes, 5)
+        return Capabilities(version: version,
+                            codecMask: codecMask,
+                            frameSize: frame == 0 ? 120 : Int(frame))
+    }
+
+    static func parseStreamSessionID(_ bytes: [UInt8]) -> UInt16 {
+        bytes.count >= 4 ? UInt16(bytes[3]) : 0
+    }
+
+    static func parseSync(_ bytes: [UInt8]) -> (predictor: Int16, stepIndex: Int)? {
+        guard bytes.count >= 7, bytes[0] == 0x0A else { return nil }
+        return (Int16(bitPattern: be16(bytes, 4)), Int(bytes[6]))
+    }
+
+    static func microphoneOpenCommand(version: UInt16, codec: UInt8) -> [UInt8] {
+        version >= 0x0100 ? [0x0C, 0x00] : [0x0C, 0x00, codec]
+    }
+
+    static func microphoneCloseCommand(version: UInt16, sessionID: UInt16) -> [UInt8] {
+        var payload: [UInt8] = [0x0D]
+        if version >= 0x0100 {
+            payload.append(UInt8(sessionID & 0xFF))
+        }
+        return payload
+    }
+
+    private static func be16(_ bytes: [UInt8], _ index: Int) -> UInt16 {
+        guard index + 1 < bytes.count else { return 0 }
+        return (UInt16(bytes[index]) << 8) | UInt16(bytes[index + 1])
+    }
+
     // MARK: - UUID（来自 Contracts，不得改动）
 
     private let serviceUUID = CBUUID(string: ATVVUUID.service)
@@ -70,10 +124,10 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     // MARK: - 握手协商结果
 
     private var protocolVersion: UInt16 = 0        // 能力帧字节1-2 BE
-    private var codecMask: UInt16 = 0              // 能力帧字节3-4 BE
+    private var codecMask: UInt16 = 0              // v1 能力帧 byte[3]
     private var selectedCodec: UInt8 = 0
     private var capsFrameLen = 120                 // 能力帧字节5-6 BE，0 则默认 120
-    private var sessionID: UInt16 = 0
+    private var sessionID: UInt16 = 0              // v1 AUDIO_START byte[3]
 
     /// 能力帧是否已解析成功（用于 S8：0x08 早于 0x0B 时暂存开麦请求）。
     private var capsReady = false
@@ -282,7 +336,6 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
         reconnectAttempt = 0
         log("CONNECTED name=\(peripheral.name ?? "?")")
-        delegate?.atvvConnected(deviceName: peripheral.name ?? "MI RC")
         // 同时发现 ATVV 与标准电池服务；电池纯只读旁路，不参与握手状态机。
         peripheral.discoverServices([serviceUUID, batteryServiceUUID])
     }
@@ -428,9 +481,14 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     // MARK: - 握手状态机（严格按 DESIGN.md §1.3 时序）
 
     private func sendGetCaps() {
-        guard let tx = txChar, let p = peripheral else { return }
         log("GET_CAPS")
-        p.writeValue(Data(ATVVBridge.getCaps), for: tx, type: .withResponse)
+        writeCommand(ATVVBridge.getCaps)
+    }
+
+    private func writeCommand(_ payload: [UInt8]) {
+        guard let tx = txChar, let p = peripheral else { return }
+        p.writeValue(Data(payload), for: tx,
+                     type: ATVVBridge.preferredWriteType(for: tx.properties))
     }
 
     private func handleControl(_ data: Data) {
@@ -466,35 +524,27 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     private func handleCaps(_ b: [UInt8]) {
-        // S7：能力帧至少需 7 字节（op + 版本2 + codec2 + 帧长2）。不足即协议错误，断开——
-        // 不得静默当作"不支持 16kHz"，否则会误导重连逻辑。
-        guard b.count >= 7 else {
-            log("CAPS_MALFORMED len=\(b.count) (protocol error)")
-            pendingDisconnectReason = "malformed caps frame (len=\(b.count))"
+        guard let caps = ATVVBridge.parseCapabilities(b) else {
+            log("CAPS_REJECTED len=\(b.count) (malformed or no 16kHz codec)")
+            pendingDisconnectReason = "invalid capabilities or remote does not support 16kHz codec"
             if let p = peripheral { central.cancelPeripheralConnection(p) }
             return
         }
 
-        // 字节1-2 版本 BE、3-4 codec 掩码 BE、5-6 帧长 BE（0 则默认 120）。
-        protocolVersion = be16(b, 1)
-        codecMask = be16(b, 3)
-        let frame = be16(b, 5)
-        capsFrameLen = frame == 0 ? 120 : Int(frame)
+        protocolVersion = caps.version
+        codecMask = caps.codecMask
+        capsFrameLen = caps.frameSize
         accumulator = FrameAccumulator(frameSize: capsFrameLen)
 
         log("CAPS version=\(hex16(protocolVersion)) codecs=\(hex16(codecMask)) frame=\(capsFrameLen)")
-
-        // ponytail: S3 —— 固定选 0x02(16kHz) 且掩码位含义来自实测；不同固件位定义可能不同，
-        // 需实机验证。升级路径：把 codec 位→采样率的映射做成表，按协商结果选采样率下发给 sink。
-        guard codecMask & 0x02 != 0 else {
-            log("CAPS_UNSUPPORTED no 16kHz codec")
-            pendingDisconnectReason = "remote does not support 16kHz codec"
-            if let p = peripheral { central.cancelPeripheralConnection(p) }
-            return
-        }
         selectedCodec = 0x02
+        let wasReady = capsReady
         capsReady = true
         log("CAPS_OK selectedCodec=0x02, awaiting mic key")
+        // UI 的“遥控器已连接”必须代表 ATVV 能力协商完成，而不只是 BLE 链路建成。
+        if !wasReady {
+            delegate?.atvvConnected(deviceName: peripheral?.name ?? "MI RC")
+        }
 
         // S8：若开麦请求早于能力帧到达，此刻补发 MIC_OPEN。
         if micOpenPending {
@@ -505,20 +555,14 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     private func sendMicOpen() {
-        guard let tx = txChar, let p = peripheral else { return }
-        // 版本 ≥ 0x0100 → 0C 00；否则 0C 00 02。
-        let payload: [UInt8] = protocolVersion >= 0x0100 ? [0x0C, 0x00] : [0x0C, 0x00, 0x02]
+        let payload = ATVVBridge.microphoneOpenCommand(version: protocolVersion,
+                                                       codec: selectedCodec)
         log("MIC_OPEN \(hexBytes(payload))")
-        p.writeValue(Data(payload), for: tx, type: .withResponse)
+        writeCommand(payload)
     }
 
     private func handleStreamStart(_ b: [UInt8]) {
-        // v1.0 布局：字节1 codec、字节2-3 sessionID BE。容错解析。
-        if b.count >= 4 {
-            sessionID = be16(b, 2)
-        } else {
-            sessionID = 0
-        }
+        sessionID = ATVVBridge.parseStreamSessionID(b)
         streaming = true
         pendingSync = nil
         frameFormatProbed = false
@@ -531,9 +575,9 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     private func handleSyncFrame(_ b: [UInt8]) {
-        // predictor(Int16 BE) 字节1-2、stepIndex 字节3。挂起，随下一帧下发。
-        let predictor = Int16(bitPattern: be16(b, 1))
-        let step = b.count > 3 ? Int(b[3]) : 0
+        guard let sync = ATVVBridge.parseSync(b) else { return }
+        let predictor = sync.predictor
+        let step = sync.stepIndex
 
         // S11：同步帧标志一个干净的帧边界。先丢弃 accumulator/probe 中的残余半帧，
         // 避免把错位的旧字节拼进新帧。
@@ -562,15 +606,10 @@ final class ATVVBridge: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     private func sendMicClose() {
-        guard let tx = txChar, let p = peripheral else { return }
-        // 版本 ≥ 0x0100 → 0D + sessionID 2 字节；否则 0D。
-        var payload: [UInt8] = [0x0D]
-        if protocolVersion >= 0x0100 {
-            payload.append(UInt8(sessionID >> 8))
-            payload.append(UInt8(sessionID & 0xFF))
-        }
+        let payload = ATVVBridge.microphoneCloseCommand(version: protocolVersion,
+                                                        sessionID: sessionID)
         log("MIC_CLOSE \(hexBytes(payload))")
-        p.writeValue(Data(payload), for: tx, type: .withResponse)
+        writeCommand(payload)
     }
 
     // MARK: - 音频帧
