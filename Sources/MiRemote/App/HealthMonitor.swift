@@ -389,9 +389,9 @@ final class HealthMonitor: @unchecked Sendable {
                                     message: "遥控已暂停，映射已有意卸载，跳过检查", guideURL: nil))
         } else if let rt = runtime, rt.keysEnabled, rt.tapAlive {
             switch KeyRemapper.mappingPresent() {
-            case true:
+            case true?:
                 items.append(RepairItem(name: "hidutil 中转映射", status: .ok, message: "在位", guideURL: nil))
-            case false:
+            case false?:
                 if let reinstallMapping {
                     reinstallMapping()
                     items.append(RepairItem(name: "hidutil 中转映射", status: .repaired,

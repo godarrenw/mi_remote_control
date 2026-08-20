@@ -5,6 +5,7 @@ cd "$(dirname "$0")"
 mkdir -p .build
 # -sectcreate 嵌入 Info.plist：CLI 二进制没有 bundle，蓝牙权限描述必须嵌进 __TEXT 段，否则 TCC 直接杀进程
 swiftc ${RELEASE:+-O} -o .build/miremote \
+  -target arm64-apple-macosx14.0 \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker Resources/Info-cli.plist \
   Sources/MiRemote/App/*.swift \
   Sources/MiRemote/Bluetooth/*.swift \

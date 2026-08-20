@@ -993,36 +993,7 @@ struct AppWheelView: View {
                 }
                 .padding(.vertical, 30)
             } else {
-                ZStack {
-                    // 圆环底
-                    Circle()
-                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                        .frame(width: radius * 2, height: radius * 2)
-                    // 中心：选中 App 名 + 取消待定态（Steam radial 规范：中心=取消区）
-                    VStack(spacing: 3) {
-                        Text(apps.indices.contains(selected) ? apps[selected].name : "")
-                            .font(.title3.weight(.semibold))
-                            .lineLimit(1)
-                            .frame(maxWidth: radius * 1.3)
-                        Text(selected == 0 ? "当前前台" : "最近使用")
-                            .font(.callout).foregroundStyle(.secondary)
-                        HStack(spacing: 3) {
-                            Image(systemName: "xmark.circle.fill")
-                            Text("返回取消")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 3)
-                    }
-                    // 图标沿圆环（从正上方起顺时针均布）
-                    ForEach(Array(apps.enumerated()), id: \.offset) { index, entry in
-                        let angle = Double(index) / Double(apps.count) * 2 * .pi - .pi / 2
-                        icon(entry, isSelected: index == selected)
-                            .offset(x: radius * CGFloat(cos(angle)),
-                                    y: radius * CGFloat(sin(angle)))
-                    }
-                }
-                .frame(width: radius * 2 + 104, height: radius * 2 + 104)
+                wheel
             }
             Text("3 秒无操作自动关闭")
                 .font(.callout).foregroundStyle(.secondary)
@@ -1034,8 +1005,56 @@ struct AppWheelView: View {
         .shadow(radius: 24, y: 8)
     }
 
-    @ViewBuilder
-    private func icon(_ entry: Entry, isSelected: Bool) -> some View {
+    private var wheel: some View {
+        ZStack {
+            Circle()
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                .frame(width: radius * 2, height: radius * 2)
+            wheelCenter
+            wheelIcons
+        }
+        .frame(width: radius * 2 + 104, height: radius * 2 + 104)
+    }
+
+    private var wheelIcons: some View {
+        ForEach(apps.indices, id: \.self) { index in
+            let angle = Double(index) / Double(apps.count) * 2 * .pi - .pi / 2
+            WheelIcon(
+                entry: apps[index],
+                isSelected: index == selected,
+                x: radius * CGFloat(cos(angle)),
+                y: radius * CGFloat(sin(angle))
+            )
+        }
+    }
+
+    private var wheelCenter: some View {
+        VStack(spacing: 3) {
+            Text(apps.indices.contains(selected) ? apps[selected].name : "")
+                .font(.title3.weight(.semibold))
+                .lineLimit(1)
+                .frame(maxWidth: radius * 1.3)
+            Text(selected == 0 ? "当前前台" : "最近使用")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack(spacing: 3) {
+                Image(systemName: "xmark.circle.fill")
+                Text("返回取消")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 3)
+        }
+    }
+
+}
+
+private struct WheelIcon: View {
+    let entry: AppWheelView.Entry
+    let isSelected: Bool
+    let x: CGFloat
+    let y: CGFloat
+
+    var body: some View {
         VStack(spacing: 4) {
             Group {
                 if let bundleID = entry.bundleID,
@@ -1054,6 +1073,7 @@ struct AppWheelView: View {
                 .padding(-7))
         }
         .animation(Motion.select, value: isSelected)
+        .offset(x: x, y: y)
     }
 }
 

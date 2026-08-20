@@ -513,7 +513,7 @@ enum SelfTest {
         do {
             let good = KeyRemapper.expectedMappingPairs
             expect(KeyRemapper.mappingSatisfied(good), "映射在位：完整正确表 → true")
-            expect(KeyRemapper.mappingSatisfied(good + [(0x700000000 + 0x999, 0x700000000 + 0x998)]),
+            expect(KeyRemapper.mappingSatisfied(good + [((0x700000000 as UInt64) + 0x999, (0x700000000 as UInt64) + 0x998)]),
                    "映射在位：额外第三方条目不影响判定")
             expect(!KeyRemapper.mappingSatisfied(Array(good.dropFirst())),
                    "映射在位：缺一条 → false")
