@@ -497,6 +497,8 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
     /// 主线程维护（NSWorkspace 通知在主线程投递）；App 轮盘 UI 直接读，
     /// `app_mru_back` 动作经主线程走 activateMRUBack()。
     private(set) var mruExternalApplications: [NSRunningApplication] = []
+    /// 窗口级 MRU（选择器排序 / 全局窗口切换用），主线程维护。
+    let windowMRU = WindowMRU()
     private static let mruCapacity = 5   // App 轮盘容量（五大 App 目标，DESIGN §3.1b）
 
     /// MRU 压栈纯逻辑（自测覆盖）：去重后插到栈顶，截断到 cap。
@@ -548,6 +550,12 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
             engine.setActiveProfile(front.bundleIdentifier)
             onActiveApplication?(front.bundleIdentifier)
         }
+        WindowSwitcher.mruProvider = { [weak self] in self?.windowMRU.snapshot() ?? [] }
+        if Thread.isMainThread {
+            windowMRU.start()
+        } else {
+            DispatchQueue.main.async { [windowMRU] in windowMRU.start() }
+        }
         // 前台 app 变化 → 自动切 profile。忽略本进程（设置窗口拿到前台不改 profile）。
         activateObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil) { [weak self] note in
@@ -556,6 +564,7 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
                   app.processIdentifier != myPid else { return }
             self.lastExternalApplication = app
             self.pushMRU(app)
+            self.windowMRU.noteFocusedWindow(of: app)
             self.engine.setActiveProfile(app.bundleIdentifier)
             self.onActiveApplication?(app.bundleIdentifier)
         }
@@ -567,6 +576,8 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
             NSWorkspace.shared.notificationCenter.removeObserver(activateObserver)
         }
         activateObserver = nil
+        windowMRU.stop()
+        WindowSwitcher.mruProvider = nil
     }
 
     deinit { invalidate() }
