@@ -122,6 +122,7 @@ final class OverlayUIState: ObservableObject {
     @Published var pickerEntries: [WindowSwitcher.PickerEntry] = []
     @Published var pickerIndex = 0
     @Published var pickerCurrentAppOnly = false
+    @Published var pickerThumbnails: [CGWindowID: NSImage] = [:]
     @Published var frontAppName: String?
     @Published var menuIndex = 0
     @Published var menuConfirming = false
@@ -135,6 +136,7 @@ enum WindowPickerFlow {
     static func nextAfterMenu(currentAppOnly: Bool) -> Bool? {
         currentAppOnly ? nil : true
     }
+
 }
 
 // MARK: - 浮层中心
@@ -163,6 +165,7 @@ final class OverlayCenter {
     private var pickerEntries: [WindowSwitcher.PickerEntry] = []
     private var pickerIndex = 0
     private var pickerCurrentAppOnly = false
+    private let thumbnails = WindowThumbnailCache()
     // 系统功能菜单状态
     private var menuIndex = 0
     // App 轮盘状态（停留式，DESIGN §3.1b：TV 长按弹出后松手停留，3s 无操作自动关）
@@ -377,6 +380,7 @@ final class OverlayCenter {
             if pickerEntries.indices.contains(pickerIndex) {
                 let target = pickerEntries[pickerIndex].window
                 close()
+                services?.keyMapper?.windowMRU.touch(target.windowID)
                 WindowSwitcher.activate(target)
             } else {
                 close()
@@ -482,9 +486,19 @@ final class OverlayCenter {
     }
 
     private func reloadPickerEntries() {
-        pickerEntries = WindowSwitcher.pickerEntries(currentAppOnly: pickerCurrentAppOnly,
-                                                     frontPid: frontApp?.processIdentifier)
-        pickerIndex = 0
+        services?.keyMapper?.windowMRU.pruneTo(
+            existing: Set(WindowSwitcher.allWindows().map(\.windowID)))
+        let picked = WindowSwitcher.pickerEntries(currentAppOnly: pickerCurrentAppOnly,
+                                                  frontPid: frontApp?.processIdentifier)
+        pickerEntries = picked.entries
+        pickerIndex = picked.selected
+        // 缩略图：先用缓存铺首帧，再异步抓新图逐张刷新
+        let ids = pickerEntries.map(\.window.windowID)
+        uiState.pickerThumbnails = thumbnails.images(for: ids)
+        thumbnails.capture(ids) { [weak self] id, image in
+            guard let self, self.active == .windowPicker else { return }
+            self.uiState.pickerThumbnails[id] = image
+        }
     }
 
     // MARK: 面板（持久 HostingView：视图树只建一次，之后全部走 sync() 状态驱动）
@@ -815,6 +829,7 @@ private struct OverlayRootView: View {
                     WindowPickerView(entries: state.pickerEntries,
                                      selected: state.pickerIndex,
                                      currentAppOnly: state.pickerCurrentAppOnly,
+                                     thumbnails: state.pickerThumbnails,
                                      frontAppName: state.frontAppName)
                 case .systemMenu:
                     SystemMenuView(selected: state.menuIndex, confirming: state.menuConfirming)
@@ -831,12 +846,16 @@ private struct OverlayRootView: View {
     }
 }
 
-/// 窗口选择器：横向卡片（App 图标 + 窗口标题），系统蓝描边高亮所选。
+/// 窗口选择器：横向卡片（窗口缩略图 + App 图标角标 + 窗口标题），系统蓝描边高亮所选。
+/// 缩略图未到/抓不到（最小化）时退回大图标。
 private struct WindowPickerView: View {
     let entries: [WindowSwitcher.PickerEntry]
     let selected: Int
     let currentAppOnly: Bool
+    let thumbnails: [CGWindowID: NSImage]
     let frontAppName: String?
+
+    private static let thumbSize = CGSize(width: 220, height: 138)
 
     var body: some View {
         VStack(spacing: 12) {
@@ -885,7 +904,7 @@ private struct WindowPickerView: View {
             }
         }
         .padding(Spacing.sheetPadding)
-        .frame(maxWidth: 1000)
+        .frame(maxWidth: 1240)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.overlay))
         .overlay(RoundedRectangle(cornerRadius: Radius.overlay)
             .stroke(Color(nsColor: .separatorColor), lineWidth: 1))
@@ -894,13 +913,29 @@ private struct WindowPickerView: View {
 
     private func card(_ entry: WindowSwitcher.PickerEntry, isSelected: Bool) -> some View {
         VStack(spacing: 8) {
-            appIcon(entry.bundleID)
-                .frame(width: 60, height: 60)
+            ZStack(alignment: .bottomTrailing) {
+                if let thumb = thumbnails[entry.window.windowID] {
+                    Image(nsImage: thumb)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: Self.thumbSize.width, height: Self.thumbSize.height)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5))
+                    appIcon(entry.bundleID)
+                        .frame(width: 28, height: 28)
+                        .offset(x: 4, y: 4)
+                } else {
+                    appIcon(entry.bundleID)
+                        .frame(width: 60, height: 60)
+                        .frame(width: Self.thumbSize.width, height: Self.thumbSize.height)
+                }
+            }
             Text(entry.window.title.isEmpty ? entry.appName : entry.window.title)
                 .font(.callout)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-                .frame(width: 156)
+                .frame(width: Self.thumbSize.width)
             Text(entry.appName)
                 .font(.caption)
                 .foregroundStyle(.secondary)

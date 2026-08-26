@@ -360,7 +360,42 @@ enum SelfTest {
             expect(WindowSwitcher.pickGlobalTarget(wins)?.windowID == 33, "全局切换有标题优先")
             expect(WindowSwitcher.pickGlobalTarget([wins[0], wins[1]])?.windowID == 22, "全局切换无标题兜底")
             expect(WindowSwitcher.pickGlobalTarget([wins[0]]) == nil, "单窗口不切换")
+            // MRU 排序：栈内按栈序，栈外保持 z 序接尾
+            let ordered = WindowSwitcher.orderByMRU(wins, mru: [33, 99, 11]).map(\.windowID)
+            expect(ordered == [33, 11, 22], "WindowSwitcher MRU 排序")
+            expect(WindowSwitcher.orderByMRU(wins, mru: []).map(\.windowID) == [11, 22, 33], "无 MRU 保持 z 序")
         }
+        do {
+            // 幽灵过滤：Ghostty 一窗三标签实测——可见 5271 在 AX 里；隐藏 584/4063/2987 里 4063 与 2987 同名，
+            // 标签栏里该标题只有一个 → 只放行一个；无对应标签的隐藏窗口全部丢弃。
+            typealias W = WindowSwitcher.WindowInfo
+            let wins = [W(pid: 1, windowID: 5271, title: "B"), W(pid: 1, windowID: 4063, title: "C"),
+                        W(pid: 1, windowID: 2987, title: "C"), W(pid: 1, windowID: 584, title: "A"),
+                        W(pid: 1, windowID: 999, title: "zombie")]
+            let kept = WindowSwitcher.filterHiddenByTabs(wins, axWindowIDs: [5271], tabTitles: ["A", "B", "C"])
+                .map(\.windowID)
+            expect(kept == [5271, 4063, 584], "隐藏标签页按标签配额放行、幽灵窗口丢弃")
+            // 可见窗口自身的标题也占配额：标签 B 已被可见 5271 占用，隐藏的同名 B 不放行
+            let dup = WindowSwitcher.filterHiddenByTabs([wins[0], W(pid: 1, windowID: 7, title: "B")],
+                                                        axWindowIDs: [5271], tabTitles: ["B"]).map(\.windowID)
+            expect(dup == [5271], "可见窗口占用同名标签配额")
+        }
+        expect(SkyLightFocus.available, "SkyLight 置前符号可解析（缺失时其他 Space 窗口无法切换）")
+        expect(WindowMRU.selfCheck(), "WindowMRU 压栈/清理自测")
+        do {
+            // 分组：MRU 序 [G1, Chrome, G2, G3, Feishu] → 同 App 紧挨：[G1, G2, G3, Chrome, Feishu]；
+            // 默认选中仍是 MRU 第二个（Chrome，下标 3），一按 OK 回切
+            typealias W = WindowSwitcher.WindowInfo
+            let mru = [W(pid: 1, windowID: 11, title: "G1"), W(pid: 2, windowID: 21, title: "Chrome"),
+                       W(pid: 1, windowID: 12, title: "G2"), W(pid: 1, windowID: 13, title: "G3"),
+                       W(pid: 3, windowID: 31, title: "Feishu")]
+            let grouped = WindowSwitcher.groupByApp(mru)
+            expect(grouped.map(\.windowID) == [11, 12, 13, 21, 31], "选择器同 App 窗口分组、App 按最近使用排")
+            expect(WindowSwitcher.defaultSelection(grouped: grouped, mruOrdered: mru) == 3, "默认选中=上一个用过的窗口")
+            expect(WindowSwitcher.defaultSelection(grouped: [mru[0]], mruOrdered: [mru[0]]) == 0, "单窗口默认 0")
+            expect(WindowSwitcher.defaultSelection(grouped: grouped, mruOrdered: [mru[0]]) == 1, "无 MRU 信息退回 1")
+        }
+        expect(WindowThumbnailCache.selfCheck(), "缩略图新鲜度/尺寸自测")
 
         // Presets-1. 所有预设的每个 KeyBinding 能被 JSONEncoder/Decoder 无损往返
         do {
