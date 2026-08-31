@@ -38,8 +38,16 @@ else
         -addext "keyUsage=critical,digitalSignature" \
         -addext "extendedKeyUsage=codeSigning"
 
-    echo "-- 2/3 打包 p12（-legacy 必须：openssl 3.x 默认算法钥匙串导入会失败）"
-    openssl pkcs12 -export -legacy \
+    # -legacy 是 OpenSSL 3.x 独有选项：其默认 PBES2/AES 加密的 p12 钥匙串导入会失败，需降级到 3DES。
+    # macOS 自带 /usr/bin/openssl 是 LibreSSL，默认就是钥匙串兼容的 3DES，且不认识 -legacy，传了直接报错。
+    P12_LEGACY_FLAG=""
+    if openssl version | grep -q '^OpenSSL 3'; then
+        P12_LEGACY_FLAG="-legacy"
+    fi
+
+    echo "-- 2/3 打包 p12（OpenSSL 3.x 时加 -legacy 降级算法，钥匙串才认）"
+    # shellcheck disable=SC2086
+    openssl pkcs12 -export $P12_LEGACY_FLAG \
         -in "$TMPDIR_SIGN/miremote-dev.crt" -inkey "$TMPDIR_SIGN/miremote-dev.key" \
         -out "$TMPDIR_SIGN/miremote-dev.p12" -passout pass:miremote
 
@@ -57,7 +65,7 @@ cat <<'EOF'
 
 【手动步骤 1】把证书设为"始终信任"（GUI 操作）
   1. 执行:  open -a "Keychain Access"   （打开"钥匙串访问"）
-  2. 左侧选"登录"钥匙串 → 找到证书 "MiRemote Dev" → 双击
+  2. 左侧类别栏点"证书"（不是"密码"）→ 找到 "MiRemote Dev" → 双击
   3. 展开"信任" → 把"代码签名 (Code Signing)"设为"始终信任"
   4. 关闭窗口，按提示输入登录密码确认
   （不做这步 codesign 会报 CSSMERR_TP_NOT_TRUSTED）

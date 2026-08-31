@@ -266,7 +266,7 @@ struct OnboardingWizard: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("同时长按左侧高亮的两个键——「主页 ⌂」和「返回 ←」——约 3 秒")
                             .font(.callout)
-                        Text("指示灯在遥控器顶部电源键旁：快速闪烁 = 进入配对模式；不闪说明没按够 3 秒或电量不足。")
+                        Text("部分型号遥控器指示灯会快速闪烁表示进入配对模式；不闪也属正常，长按 3 秒后去系统蓝牙里找新设备即可。")
                             .font(.caption).foregroundStyle(.secondary)
                         Text("① 长按进入配对 → ② 点下方按钮到系统蓝牙里点「连接」→ ③ 回到这里，连上会自动打勾。")
                             .font(.caption).foregroundStyle(.secondary)
@@ -286,6 +286,7 @@ struct OnboardingWizard: View {
                             Text("· 检查遥控器电量（换电池试试）")
                             Text("· 靠近 Mac 半米内重试")
                             Text("· 遥控器可能已连着电视/盒子——先在那边断开")
+                            Text("· 指示灯不闪也正常：长按 3 秒后直接去蓝牙设置里找新设备点「连接」")
                         }
                         .font(.caption).foregroundStyle(.secondary)
                     }
