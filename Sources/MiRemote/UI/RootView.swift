@@ -27,13 +27,19 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 @MainActor
 struct RootView: View {
     @EnvironmentObject var model: AppModel
+    let showsPermissionPrompts: Bool
     @State private var selection: SidebarItem = .mapping
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showOnboarding = false
     @State private var showHealthCheck = false
     @State private var showReauth = false
 
+    init(showsPermissionPrompts: Bool = true) {
+        self.showsPermissionPrompts = showsPermissionPrompts
+    }
+
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             VStack(alignment: .leading, spacing: 0) {
                 // 侧栏头部
                 HStack(spacing: Spacing.intra) {
@@ -81,11 +87,14 @@ struct RootView: View {
                                        onShowHealthCheck: { showHealthCheck = true })
             }
         }
+        .toolbar(removing: .sidebarToggle)
+        .modifier(TopScrollEdgeFix())
         .frame(minWidth: 760, minHeight: 560)
         .sheet(isPresented: $showOnboarding) { OnboardingWizard() }
         .sheet(isPresented: $showHealthCheck) { HealthCheckSheet() }
         .sheet(isPresented: $showReauth) { ReauthSheet() }
         .onAppear {
+            guard showsPermissionPrompts else { return }
             let lostPermissions = PermissionMemory.lostPermissions()
             // 每次进程启动都按当前真实权限重检。完成过向导只代表用户走完流程，
             // 不能掩盖后来拒绝/撤销/签名变化导致的失权。
@@ -107,6 +116,11 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .miremoteShowHealthCheck)) { _ in
             showHealthCheck = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .miremoteToggleSidebar)) { _ in
+            withAnimation(Motion.select) {
+                columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            }
+        }
     }
 
     private func batterySymbol(_ pct: Int) -> String {
@@ -116,6 +130,19 @@ struct RootView: View {
         case 40..<65: return "battery.50percent"
         case 65..<90: return "battery.75percent"
         default:      return "battery.100percent"
+        }
+    }
+}
+
+/// macOS 26 起会在窗口工具栏下为 ScrollView 自动添加较深的柔化区，
+/// 设置页标题因此在滚动位置为零时仍被覆盖；旧系统保持原生布局。
+private struct TopScrollEdgeFix: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.scrollEdgeEffectHidden(true, for: .top)
+        } else {
+            content
         }
     }
 }
@@ -141,4 +168,5 @@ enum PermissionGate {
 
 extension Notification.Name {
     static let miremoteShowHealthCheck = Notification.Name("com.miremote.showHealthCheck")
+    static let miremoteToggleSidebar = Notification.Name("com.miremote.toggleSidebar")
 }
