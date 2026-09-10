@@ -1,10 +1,14 @@
 import AppKit
 import SwiftUI
 
+private extension NSToolbarItem.Identifier {
+    static let miRemoteSidebarToggle = NSToolbarItem.Identifier("MiRemote.SidebarToggle")
+}
+
 /// GUI 模式的应用委托：服务生命周期 + 双形态窗口（DESIGN §6.1）+ 状态反馈三件套。
 /// --ui-preview：窗口照常，引擎不启动（开发验证专用）。
 @MainActor
-final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate {
 
     private let uiPreview: Bool
     private var services: AppServices?
@@ -13,6 +17,13 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusController: StatusItemController?
     private var badgeController: FloatingBadgeController?
     private var overlayCenter: OverlayCenter?
+    private lazy var settingsToolbar: NSToolbar = {
+        let toolbar = NSToolbar(identifier: "MiRemote.SettingsToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        return toolbar
+    }()
 
     init(uiPreview: Bool) {
         self.uiPreview = uiPreview
@@ -141,10 +152,16 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                              backing: .buffered, defer: false)
             w.title = "MiRemote 设置"
             w.contentView = NSHostingView(rootView: root)
+            w.toolbarStyle = .unifiedCompact
             w.center()
             w.isReleasedWhenClosed = false
             w.delegate = self
             window = w
+            // SwiftUI 会在首轮布局时安装自己的栏；下一轮再交还窗口级工具栏，避免被覆盖。
+            DispatchQueue.main.async { [weak self, weak w] in
+                guard let self, let w else { return }
+                w.toolbar = self.settingsToolbar
+            }
         }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -171,6 +188,33 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         return true
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, .miRemoteSidebarToggle]
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.flexibleSpace, .miRemoteSidebarToggle]
+    }
+
+    func toolbar(_ toolbar: NSToolbar,
+                 itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard itemIdentifier == .miRemoteSidebarToggle else { return nil }
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        item.label = "切换侧边栏"
+        item.paletteLabel = "切换侧边栏"
+        item.toolTip = "显示或隐藏侧边栏"
+        item.image = NSImage(systemSymbolName: "sidebar.leading", accessibilityDescription: "切换侧边栏")
+        item.target = self
+        item.action = #selector(toggleSidebar)
+        item.isBordered = true
+        return item
+    }
+
+    @objc private func toggleSidebar() {
+        NotificationCenter.default.post(name: .miremoteToggleSidebar, object: nil)
     }
 
     func windowWillClose(_ notification: Notification) {
