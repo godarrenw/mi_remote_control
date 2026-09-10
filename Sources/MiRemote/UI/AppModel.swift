@@ -312,13 +312,16 @@ final class AppModel: ObservableObject {
         applyVoiceMode()
     }
 
-    /// 语音模式 → VoiceBridgeApp 开关（A=切BlackHole+豆包 / B=仅豆包 / off=全关）。
+    /// 语音模式 → VoiceBridgeApp 开关（A=遥控器音频+BlackHole / B=仅触发 / off=全关）。
     func applyVoiceMode() {
         guard let voice = services?.voiceApp else { return }
         switch voiceMode {
-        case .remoteMic: voice.switchInput = true;  voice.doubao = true
-        case .macMic:    voice.switchInput = false; voice.doubao = true
-        case .off:       voice.switchInput = false; voice.doubao = false
+        case .remoteMic:
+            voice.configureVoiceMode(routeRemoteAudio: true, switchInput: true, doubao: true)
+        case .macMic:
+            voice.configureVoiceMode(routeRemoteAudio: false, switchInput: false, doubao: true)
+        case .off:
+            voice.configureVoiceMode(routeRemoteAudio: false, switchInput: false, doubao: false)
         }
     }
 
