@@ -9,6 +9,10 @@
 
 ### 修复
 
+- **Mac 内置麦克风模式仍启停 BlackHole 导致爆音**：模式 B 的设计契约是遥控器只负责触发
+  语音工具、由 Mac 麦克风收音，但运行时此前仍无条件启动、写入并停止 BlackHole 的
+  `AVAudioEngine`。现在模式 B 与关闭模式完全绕过 PCM/BlackHole，仅保留首个真实 BLE
+  音频帧触发语音工具的防抖；遥控器麦克风模式保持原行为。
 - **per-app 设的 OK 组合键被引擎静默丢弃**：基础态（层 0）的 OK 短按此前被硬编码成
   纯 Return，`fireTap` 根本不读 profile 的 `ok.tap`——GUI 允许你设、`config.json` 也存得下，
   运行时却整条忽略，用户只看到「设了没用」。典型场景：飞书把发送设成 ⌘+Enter，遥控 OK

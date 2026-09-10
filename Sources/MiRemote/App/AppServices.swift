@@ -310,22 +310,23 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
     /// 配置位：GUI 主线程写、ATVV 队列读——锁保护（Bool 竞态读写是未定义行为，
     /// 且会话中途切换会导致 stop 侧清理判断错位，见下方会话锁存）。
     private let cfgLock = NSLock()
+    private var _routeRemoteAudio: Bool
     private var _switchInput: Bool
     private var _doubao: Bool
-    /// GUI 语音页可切换（模式 A=true / 模式 B=false）。
-    var switchInput: Bool {
-        get { cfgLock.lock(); defer { cfgLock.unlock() }; return _switchInput }
-        set { cfgLock.lock(); _switchInput = newValue; cfgLock.unlock() }
-    }
-    /// 是否触发豆包（模式 off=false）。
-    var doubao: Bool {
-        get { cfgLock.lock(); defer { cfgLock.unlock() }; return _doubao }
-        set { cfgLock.lock(); _doubao = newValue; cfgLock.unlock() }
+
+    /// GUI 三模式原子切换，避免会话开始恰好夹在多个 Bool 写入之间而锁存混合状态。
+    func configureVoiceMode(routeRemoteAudio: Bool, switchInput: Bool, doubao: Bool) {
+        cfgLock.lock()
+        _routeRemoteAudio = routeRemoteAudio
+        _switchInput = switchInput
+        _doubao = doubao
+        cfgLock.unlock()
     }
 
     /// 会话锁存（cfgLock 保护）：一次语音会话实际执行过的操作。stop/结束只按锁存
     /// 状态对称清理——会话中把模式切到 off/macMic 不能跳过已做操作的回滚。
     private var sessionActive = false
+    private var sessionRoutedRemoteAudio = false
     private var sessionSwitchedMic = false
     private var sessionDoubao = false
 
@@ -340,12 +341,17 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
 
     init(outputName: String?, wavPath: String?, gainDB: Double, verbose: Bool,
          switchInput: Bool, doubao: Bool, micDeviceName: String = "BlackHole",
-         extraSink: PCMSink? = nil) {
+         extraSink: PCMSink? = nil, sinkOverride: PCMSink? = nil) {
         self.post = PCMPostprocessor(gainDB: gainDB)
         self.verbose = verbose
+        self._routeRemoteAudio = true
         self._switchInput = switchInput
         self._doubao = doubao
         self.micDeviceName = micDeviceName
+        if let sinkOverride {
+            self.sink = sinkOverride
+            return
+        }
         var sinks: [PCMSink] = [AudioBridge(deviceName: outputName)]
         if let wavPath {
             sinks.append(WAVSink(url: URL(fileURLWithPath: wavPath)))
@@ -376,23 +382,26 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         restoreWork = nil
         // 会话锁存：本会话按此刻的配置执行并记录实际做过的操作，
         // 结束/stop 只按锁存值对称回滚（会话中途改配置不影响本会话清理）。
-        let (wantSwitch, wantDoubao): (Bool, Bool) = {
+        let (wantAudio, wantSwitch, wantDoubao): (Bool, Bool, Bool) = {
             cfgLock.lock(); defer { cfgLock.unlock() }
             sessionActive = true
+            sessionRoutedRemoteAudio = _routeRemoteAudio
             sessionSwitchedMic = false   // 真正切换后才置位，见 atvvAudioFrame 的 pendingMicSwitch 分支
             sessionDoubao = _doubao
-            return (_switchInput, _doubao)
+            return (_routeRemoteAudio, _switchInput, _doubao)
         }()
         // 抖动幽灵会话（有 START/STOP 但零音频帧）不做任何有副作用的操作：
         // 麦克风切换和豆包触发一样，等第一个真实音频帧到达再执行——否则遥控器
         // BLE START/STOP 每次抖动都会拿系统默认输入设备开刀一次，Bluetooth 耳机
         // 据此重新协商音频 profile，每次都炸出一下可闻的杂音。
-        pendingMicSwitch = wantSwitch
+        pendingMicSwitch = wantAudio && wantSwitch
         pendingTrigger = wantDoubao
         cfgLock.lock(); triggered = false; cfgLock.unlock()
-        decoder.reset(predictor: 0, stepIndex: 0)
-        post.reset()
-        sink.streamStarted(sampleRate: 16000)
+        if wantAudio {
+            decoder.reset(predictor: 0, stepIndex: 0)
+            post.reset()
+            sink.streamStarted(sampleRate: 16000)
+        }
     }
 
     private var restoreWork: DispatchWorkItem?
@@ -405,10 +414,11 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         onVoiceActive?(false)
         pendingMicSwitch = false
         pendingTrigger = false
-        let (didSwitch, didDoubao, didTrigger): (Bool, Bool, Bool) = {
+        let (didRouteAudio, didSwitch, didDoubao, didTrigger): (Bool, Bool, Bool, Bool) = {
             cfgLock.lock(); defer { cfgLock.unlock() }
-            let r = (sessionSwitchedMic, sessionDoubao, triggered)
+            let r = (sessionRoutedRemoteAudio, sessionSwitchedMic, sessionDoubao, triggered)
             sessionActive = false
+            sessionRoutedRemoteAudio = false
             sessionSwitchedMic = false
             sessionDoubao = false
             return r
@@ -423,7 +433,7 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
             restoreWork = work
             DispatchQueue.global().asyncAfter(deadline: .now() + 1.2, execute: work)
         }
-        sink.streamStopped()
+        if didRouteAudio { sink.streamStopped() }
     }
 
     /// 服务停止兜底：语音会话仍在进行时按锁存状态强制收尾
@@ -434,10 +444,11 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         restoreWork = nil
         pendingMicSwitch = false
         pendingTrigger = false
-        let (active, didSwitch): (Bool, Bool) = {
+        let (active, didRouteAudio, didSwitch): (Bool, Bool, Bool) = {
             cfgLock.lock(); defer { cfgLock.unlock() }
-            let r = (sessionActive, sessionSwitchedMic)
+            let r = (sessionActive, sessionRoutedRemoteAudio, sessionSwitchedMic)
             sessionActive = false
+            sessionRoutedRemoteAudio = false
             sessionSwitchedMic = false
             sessionDoubao = false
             return r
@@ -445,7 +456,7 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
         if active {
             log("服务停止：语音会话仍在进行，强制收尾")
             onVoiceActive?(false)
-            sink.streamStopped()
+            if didRouteAudio { sink.streamStopped() }
         }
         // 即使 ATVV 已先发 VoiceStopped，普通 end 仍可能在等待最短按住/去抖；
         // 服务停止必须无条件取消延迟并同步补 keyUp/恢复输入法。
@@ -469,6 +480,11 @@ final class VoiceBridgeApp: ATVVBridgeDelegate {
             cfgLock.lock(); triggered = true; cfgLock.unlock()
             VoiceTrigger.begin(config: resolveTriggerConfig?())
         }
+        let shouldRouteAudio: Bool = {
+            cfgLock.lock(); defer { cfgLock.unlock() }
+            return sessionRoutedRemoteAudio
+        }()
+        guard shouldRouteAudio else { return }
         if let sync {
             decoder.reset(predictor: sync.predictor, stepIndex: sync.stepIndex)
         }
