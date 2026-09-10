@@ -27,11 +27,16 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 @MainActor
 struct RootView: View {
     @EnvironmentObject var model: AppModel
+    let showsPermissionPrompts: Bool
     @State private var selection: SidebarItem = .mapping
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showOnboarding = false
     @State private var showHealthCheck = false
     @State private var showReauth = false
+
+    init(showsPermissionPrompts: Bool = true) {
+        self.showsPermissionPrompts = showsPermissionPrompts
+    }
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -89,6 +94,7 @@ struct RootView: View {
         .sheet(isPresented: $showHealthCheck) { HealthCheckSheet() }
         .sheet(isPresented: $showReauth) { ReauthSheet() }
         .onAppear {
+            guard showsPermissionPrompts else { return }
             let lostPermissions = PermissionMemory.lostPermissions()
             // 每次进程启动都按当前真实权限重检。完成过向导只代表用户走完流程，
             // 不能掩盖后来拒绝/撤销/签名变化导致的失权。

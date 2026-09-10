@@ -146,7 +146,7 @@ final class GUIAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, N
 
     private func showWindow() {
         if window == nil {
-            let root = RootView().environmentObject(model!)
+            let root = RootView(showsPermissionPrompts: !uiPreview).environmentObject(model!)
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 620),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
