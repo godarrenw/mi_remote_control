@@ -128,7 +128,7 @@ struct VoicePage: View {
                                 }
                             }
                         }
-                        Text("这里设置的是遥控器开始传音时，MiRemote 向当前 App 发送的快捷键。请先在对应语音工具里设成同一个键。")
+                        Text("这里设置的是遥控器开始传音时，MiRemote 向当前 App 发送的快捷键。请先在对应语音工具里设成同一个键和同一种触发方式：单击 = 按一下遥控器开关一次（松开不再发键）；按住说话 = 按下保持、松开抬起。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     .padding(Spacing.cardPadding)

@@ -4,9 +4,9 @@ import CoreGraphics
 
 /// 通用语音触发器：把"遥控器语音键按下/松开"翻译成目标语音工具的热键动作。
 /// 覆盖常见语音转文字工具的三种触发模式：
-///   hold   按住说话（按下=keyDown，松开=keyUp）——Typeless/superwhisper 类
-///   tap    单击开、再击关——豆包"按一下开始长录音"设置
-///   double 双击开、单击关——豆包默认设置
+///   hold   按住说话（按下=keyDown，松开=keyUp）——Typeless/superwhisper/八哥说按住
+///   tap    单击开、再击关：一次物理按下只发一次单击，松开不再发
+///   double 双击开：一次物理按下发一次双击，松开不再发
 /// 可选先切输入法（豆包是 IME 需要切；独立 app 传 nil）。
 /// 需要「辅助功能」权限（合成 CGEvent）。
 struct VoiceTriggerConfig: Equatable {
@@ -40,6 +40,52 @@ enum VoiceTriggerRouting {
         let key = VoiceTriggerConfig.keyTable[rule.keyName] == nil ? fallback.keyName : rule.keyName
         let mode = VoiceTriggerConfig.Mode(rawValue: rule.mode) ?? .hold
         return VoiceTriggerConfig(keyName: key, mode: mode, imeBundlePrefix: rule.imeBundlePrefix)
+    }
+}
+
+/// begin/end/shutdown 该发什么键。纯函数，避免「按下点一下、松开再点一下」把单击模式变成两次热键。
+enum VoiceTriggerPlan {
+    enum Emission: Equatable {
+        case none
+        case keyDown
+        case keyUp
+        case tap
+        case doubleTap
+    }
+
+    static let tapCoalesceMs: UInt64 = 250
+
+    static func begin(mode: VoiceTriggerConfig.Mode,
+                      holdAlreadyDown: Bool,
+                      nsSinceLastClick: UInt64?) -> Emission {
+        switch mode {
+        case .hold:
+            return holdAlreadyDown ? .none : .keyDown
+        case .tap:
+            return shouldCoalesce(nsSinceLastClick) ? .none : .tap
+        case .double:
+            return shouldCoalesce(nsSinceLastClick) ? .none : .doubleTap
+        }
+    }
+
+    static func end(mode: VoiceTriggerConfig.Mode, holdIsDown: Bool) -> Emission {
+        switch mode {
+        case .hold: return holdIsDown ? .keyUp : .none
+        case .tap, .double: return .none
+        }
+    }
+
+    static func shutdown(mode: VoiceTriggerConfig.Mode?, holdIsDown: Bool) -> Emission {
+        guard let mode else { return holdIsDown ? .keyUp : .none }
+        switch mode {
+        case .hold: return holdIsDown ? .keyUp : .none
+        case .tap, .double: return .none
+        }
+    }
+
+    static func shouldCoalesce(_ nsSinceLastClick: UInt64?) -> Bool {
+        guard let ns = nsSinceLastClick else { return false }
+        return ns < tapCoalesceMs * 1_000_000
     }
 }
 
@@ -138,15 +184,31 @@ enum VoiceTrigger {
         post(down: false, config: cfg)
     }
 
+    private static func emit(_ emission: VoiceTriggerPlan.Emission, config cfg: VoiceTriggerConfig) {
+        switch emission {
+        case .none: break
+        case .keyDown: post(down: true, config: cfg)
+        case .keyUp: post(down: false, config: cfg)
+        case .tap: tap(cfg)
+        case .doubleTap:
+            tap(cfg)
+            usleep(80_000)
+            tap(cfg)
+        }
+    }
+
     // MARK: - 对外接口（异步，不阻塞 BLE queue）
 
     // hold 模式的抖动防护：
     // 遥控器语音键存在抖动（极短的 START/STOP 对），若如实转发会变成"Option 极短点按"，
     // 被豆包当成"单击=开始长录音"。两道防线：
     //  1) 松开去抖：收到 end 后等 250ms 再真正松键，期间来了新 begin 则合并（不重复按下）
-    //  2) 最短按住：Option 至少按住 600ms 再松，避免落入"单击"判定
+    //  2) 最短按住：Option 至少按住 1000ms 再松，避免落入"单击"判定
+    // tap/double：一次物理按下只在 begin 发键；end/shutdown 不再补发，否则八哥说等
+    // 「单击开、再击关」会在松开时被立刻关掉。ATVV 抖动用 250ms 单击合并吃掉。
     private static var isDown = false
     private static var downAtNs: UInt64 = 0
+    private static var lastClickAtNs: UInt64?
     private static var releaseWork: DispatchWorkItem?
     private static let minHoldMs: UInt64 = 1000
     private static let releaseDebounceMs = 250
@@ -169,22 +231,27 @@ enum VoiceTrigger {
                 sessionConfig = nil
             }
             config = cfg
-            switch cfg.mode {
-            case .hold:
-                if isDown { return } // 抖动合并：同配置仍按着，无需重按
-                switchIMEIfNeeded(cfg)
-                post(down: true, config: cfg)
+            let now = DispatchTime.now().uptimeNanoseconds
+            let emission = VoiceTriggerPlan.begin(
+                mode: cfg.mode,
+                holdAlreadyDown: isDown,
+                nsSinceLastClick: lastClickAtNs.map { now &- $0 }
+            )
+            if emission == .none {
+                if cfg.mode != .hold { sessionConfig = cfg }
+                return
+            }
+            switchIMEIfNeeded(cfg)
+            emit(emission, config: cfg)
+            sessionConfig = cfg
+            switch emission {
+            case .keyDown:
                 isDown = true
-                sessionConfig = cfg
-                downAtNs = DispatchTime.now().uptimeNanoseconds
-            case .tap:
-                switchIMEIfNeeded(cfg)
-                sessionConfig = cfg
-                tap(cfg)
-            case .double:
-                switchIMEIfNeeded(cfg)
-                sessionConfig = cfg
-                tap(cfg); usleep(80_000); tap(cfg)
+                downAtNs = now
+            case .tap, .doubleTap:
+                lastClickAtNs = now
+            default:
+                break
             }
         }
     }
@@ -193,9 +260,8 @@ enum VoiceTrigger {
     static func end() {
         queue.async {
             let cfg = sessionConfig ?? config   // 一律按会话锁存配置对称收尾
-            switch cfg.mode {
-            case .hold:
-                guard isDown else { return }
+            switch VoiceTriggerPlan.end(mode: cfg.mode, holdIsDown: isDown) {
+            case .keyUp:
                 let heldMs = (DispatchTime.now().uptimeNanoseconds - downAtNs) / 1_000_000
                 let extraForMinHold = heldMs >= minHoldMs ? 0 : Int(minHoldMs - heldMs)
                 let wait = max(extraForMinHold, releaseDebounceMs)
@@ -207,16 +273,18 @@ enum VoiceTrigger {
                 }
                 releaseWork = work
                 queue.asyncAfter(deadline: .now() + .milliseconds(wait), execute: work)
-            case .tap, .double:
-                tap(cfg)
+            case .none:
+                guard cfg.mode != .hold else { return }
                 sessionConfig = nil
                 restoreIMEIfNeeded(cfg)
+            default:
+                break
             }
         }
     }
 
     /// 进程退出专用同步收尾：不等最短按住/去抖/IME 延迟，立即对称释放本会话
-    /// 的触发键、关闭 tap/double 会话并取回待恢复输入法。返回时全局键态已清理。
+    /// 仍按着的 hold 触发键，并取回待恢复输入法。tap/double 不补发单击，避免退出时误开关语音 App。返回时全局键态已清理。
     static func shutdown() {
         let inputSourceToRestore: TISInputSource?
         if Thread.isMainThread {
@@ -249,13 +317,7 @@ enum VoiceTrigger {
         releaseWork = nil
 
         if let cfg = sessionConfig {
-            switch cfg.mode {
-            case .hold:
-                if isDown { post(down: false, config: cfg) }
-            case .tap, .double:
-                // 两种模式的结束动作都是单击一次。
-                tap(cfg)
-            }
+            emit(VoiceTriggerPlan.shutdown(mode: cfg.mode, holdIsDown: isDown), config: cfg)
         } else if isDown {
             // 防御性兜底：旧状态没有锁存配置时仍用当前配置释放。
             post(down: false, config: config)

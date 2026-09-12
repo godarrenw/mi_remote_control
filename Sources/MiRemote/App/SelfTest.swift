@@ -1271,6 +1271,39 @@ enum SelfTest {
             expect(bad.keyName == "fn" && bad.mode == .tap, "CLI 坏值安全回落配置值")
         }
 
+        // 语音 tap/double：一次物理按下只在 begin 发键，松开/退出不补发（否则八哥说单击会被立刻关掉）。
+        do {
+            let coalesceNs = VoiceTriggerPlan.tapCoalesceMs * 1_000_000
+            expect(VoiceTriggerPlan.begin(mode: .hold, holdAlreadyDown: false, nsSinceLastClick: nil) == .keyDown,
+                   "hold begin = keyDown")
+            expect(VoiceTriggerPlan.begin(mode: .hold, holdAlreadyDown: true, nsSinceLastClick: nil) == .none,
+                   "hold 抖动合并：已按下不再发 keyDown")
+            expect(VoiceTriggerPlan.end(mode: .hold, holdIsDown: true) == .keyUp,
+                   "hold end = keyUp")
+            expect(VoiceTriggerPlan.end(mode: .hold, holdIsDown: false) == .none,
+                   "hold 未按下时 end 为空")
+            expect(VoiceTriggerPlan.begin(mode: .tap, holdAlreadyDown: false, nsSinceLastClick: nil) == .tap,
+                   "tap begin = 一次单击")
+            expect(VoiceTriggerPlan.end(mode: .tap, holdIsDown: false) == .none,
+                   "tap end 不再发键")
+            expect(VoiceTriggerPlan.shutdown(mode: .tap, holdIsDown: false) == .none,
+                   "tap shutdown 不补发单击")
+            expect(VoiceTriggerPlan.begin(mode: .double, holdAlreadyDown: false, nsSinceLastClick: nil) == .doubleTap,
+                   "double begin = 一次双击")
+            expect(VoiceTriggerPlan.end(mode: .double, holdIsDown: false) == .none,
+                   "double end 不再发键")
+            expect(VoiceTriggerPlan.shutdown(mode: .double, holdIsDown: false) == .none,
+                   "double shutdown 不补发单击")
+            expect(VoiceTriggerPlan.begin(mode: .tap, holdAlreadyDown: false, nsSinceLastClick: coalesceNs - 1) == .none,
+                   "tap 250ms 内第二次 begin 合并")
+            expect(VoiceTriggerPlan.begin(mode: .tap, holdAlreadyDown: false, nsSinceLastClick: coalesceNs) == .tap,
+                   "tap 250ms 后允许下一次单击")
+            expect(VoiceTriggerPlan.shutdown(mode: .hold, holdIsDown: true) == .keyUp,
+                   "hold shutdown 仍对称释放，避免修饰键粘住")
+            expect(VoiceTriggerPlan.shutdown(mode: nil, holdIsDown: true) == .keyUp,
+                   "无锁存配置时 shutdown 仍释放按着的键")
+        }
+
         print(failures == 0 ? "SELF-TEST PASS" : "SELF-TEST FAIL (\(failures))")
         return failures == 0 ? 0 : 1
     }
