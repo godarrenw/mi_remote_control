@@ -170,7 +170,9 @@ Ghostty 等常用 App），但这些都不是硬性要求：**缺哪样，对应
 语音触发三件套不在 `settings`，在 `voiceProfiles`（可按 App 覆盖）：
 `keyName`（触发键，如 `right_option`/`fn`/`f13`）、`mode`（`hold` 按住说话 /
 `tap` 单击开关 / `double` 双击开）、`imeBundlePrefix`（要切换到的输入法 bundle 前缀，
-`null` = 独立语音 App 不切输入法）。优先级：**CLI 标志 > config.json > 内置默认**。
+`null` = 独立语音 App 不切输入法）。`tap`/`double` 只在按下时发键，松开不再补发，
+这样「单击开始 / 再击结束」才是第二次按下才关。须与语音工具的触发方式一致。
+优先级：**CLI 标志 > config.json > 内置默认**。
 
 ### 换别的遥控器型号
 
