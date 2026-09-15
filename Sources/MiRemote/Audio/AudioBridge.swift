@@ -1,5 +1,4 @@
 import Foundation
-import AVFoundation
 import CoreAudio
 import AudioToolbox
 
@@ -164,8 +163,7 @@ private final class RingBuffer: @unchecked Sendable {
 final class AudioBridge: PCMSink, @unchecked Sendable {
 
     private let deviceName: String?
-    private let engine = AVAudioEngine()
-    private var sourceNode: AVAudioSourceNode?
+    private var audioQueue: AudioQueueRef?
     private let ring: RingBuffer
     private var sourceSampleRate: Double = 16000
     private var isRunning = false
@@ -193,10 +191,10 @@ final class AudioBridge: PCMSink, @unchecked Sendable {
             guard !isRunning else { return }
             sourceSampleRate = sampleRate
             ring.clear()
-            // 若上一次 stop 的后台排空尚未真正停机，引擎仍在运行——直接复用，不重复 attach。
-            if engine.isRunning, sourceNode != nil {
+            // 若上一次 stop 的后台排空尚未真正停机，直接复用仍在运行的播放队列。
+            if audioQueue != nil {
                 isRunning = true
-                NSLog("[AudioBridge] 复用运行中的引擎（取消上一次停机）")
+                NSLog("[AudioBridge] 复用运行中的播放队列（取消上一次停机）")
                 return
             }
             do {
@@ -240,97 +238,91 @@ final class AudioBridge: PCMSink, @unchecked Sendable {
                         NSLog("[AudioBridge] 停机被新的 start 取消")
                         return
                     }
-                    engine.stop()
-                    if let node = sourceNode {
-                        engine.detach(node)
-                        sourceNode = nil
-                    }
+                    disposeQueue()
                 }
             }
         }
     }
 
-    // MARK: 引擎搭建
+    // MARK: 固定设备的播放队列
+
+    deinit { disposeQueue() }
+
+    private func disposeQueue() {
+        if let queue = audioQueue {
+            // 同步停止回调，随后才能释放回调使用的 ring。
+            AudioQueueDispose(queue, true)
+            audioQueue = nil
+        }
+    }
 
     private func start() throws {
-        // S10：先绑定目标输出设备，再读取输出格式——绑定会改变 outputNode 的当前设备，
-        // 其采样率随之变化，必须在绑定之后读取才拿到目标设备的真实采样率。
-        if let name = deviceName {
-            if let deviceID = CoreAudioDevices.findOutputDevice(namePrefix: name) {
-                try bindOutputDevice(deviceID)
-            } else {
-                NSLog("[AudioBridge] 未找到输出设备 \"\(name)\"，回退系统默认输出")
-            }
-        }
-
-        let output = engine.outputNode
-        let outputFormat = output.outputFormat(forBus: 0)
-        let outputSampleRate = outputFormat.sampleRate > 0 ? outputFormat.sampleRate : 48000
-
-        // 源节点声明为源采样率（16k）单声道 float；engine 自动把 16k→输出设备采样率做上采样。
-        // ponytail: 让 AVAudioEngine 内部转换器处理重采样，比手写线性插值简单可靠。
-        guard let srcFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sourceSampleRate,
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw NSError(domain: "AudioBridge", code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "无法创建源格式"])
-        }
-
-        let ringRef = ring
-        let node = AVAudioSourceNode(format: srcFormat) { _, _, frameCount, audioBufferList in
-            let abl = UnsafeMutableAudioBufferListPointer(audioBufferList)
-            let n = Int(frameCount)
-            // 单声道非交错：只有一个 buffer
-            if let mData = abl[0].mData {
-                let ptr = mData.assumingMemoryBound(to: Float.self)
-                ringRef.read(into: ptr, count: n)
-            }
-            return noErr
-        }
-        self.sourceNode = node
-        engine.attach(node)
-
-        // 连接到主混音器，用输出设备的采样率格式（engine 会在 source(16k)→mixer 之间自动转换）。
-        let connectFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: outputSampleRate,
-            channels: 1,
-            interleaved: false
+        // AVAudioEngine 的 I/O 节点会跟随默认设备重配置，直接修改其底层 AUHAL
+        // 无法保持显式输出绑定。AudioQueue 直接绑定设备 UID，与默认输入切换独立。
+        var format = AudioStreamBasicDescription(
+            mSampleRate: sourceSampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
+            mChannelsPerFrame: 1, mBitsPerChannel: 32, mReserved: 0
         )
-        engine.connect(node, to: engine.mainMixerNode, format: connectFormat)
-
-        // S9：引擎启动失败时回滚已 attach 的节点，避免残留半初始化状态污染下次 start。
+        var created: AudioQueueRef?
+        try check(AudioQueueNewOutput(&format, { context, queue, buffer in
+            guard let context else { return }
+            let ring = Unmanaged<RingBuffer>.fromOpaque(context).takeUnretainedValue()
+            let count = Int(buffer.pointee.mAudioDataBytesCapacity) / MemoryLayout<Float>.size
+            ring.read(into: buffer.pointee.mAudioData.assumingMemoryBound(to: Float.self), count: count)
+            buffer.pointee.mAudioDataByteSize = buffer.pointee.mAudioDataBytesCapacity
+            AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+        }, Unmanaged.passUnretained(ring).toOpaque(), nil, nil, 0, &created), "创建播放队列")
+        guard let queue = created else {
+            throw NSError(domain: "AudioBridge", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "未创建播放队列"])
+        }
         do {
-            try engine.start()
+            if let name = deviceName {
+                if let deviceID = CoreAudioDevices.findOutputDevice(namePrefix: name) {
+                    var address = AudioObjectPropertyAddress(
+                        mSelector: kAudioDevicePropertyDeviceUID,
+                        mScope: kAudioObjectPropertyScopeGlobal,
+                        mElement: kAudioObjectPropertyElementMain
+                    )
+                    var uid: CFString?
+                    var size = UInt32(MemoryLayout<CFString?>.size)
+                    try withUnsafeMutablePointer(to: &uid) { pointer in
+                        try check(AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, pointer), "读取输出设备 UID")
+                        try check(AudioQueueSetProperty(queue, kAudioQueueProperty_CurrentDevice,
+                                                        pointer, size), "绑定输出设备")
+                    }
+                } else {
+                    NSLog("[AudioBridge] 未找到输出设备 %@，回退系统默认输出", name)
+                }
+            }
+            // 3 个 20ms 单声道缓冲；AudioQueue 负责向设备采样率/通道格式转换。
+            let byteCount = UInt32(sourceSampleRate * 0.02) * UInt32(MemoryLayout<Float>.size)
+            for _ in 0..<3 {
+                var allocated: AudioQueueBufferRef?
+                try check(AudioQueueAllocateBuffer(queue, byteCount, &allocated), "分配播放缓冲")
+                guard let buffer = allocated else {
+                    throw NSError(domain: "AudioBridge", code: -2,
+                                  userInfo: [NSLocalizedDescriptionKey: "未分配播放缓冲"])
+                }
+                memset(buffer.pointee.mAudioData, 0, Int(byteCount))
+                buffer.pointee.mAudioDataByteSize = byteCount
+                try check(AudioQueueEnqueueBuffer(queue, buffer, 0, nil), "提交播放缓冲")
+            }
+            try check(AudioQueueStart(queue, nil), "启动播放")
+            audioQueue = queue
         } catch {
-            engine.detach(node)
-            sourceNode = nil
+            AudioQueueDispose(queue, true)
             throw error
         }
     }
 
-    /// 把 engine.outputNode 底层的 AUHAL 绑定到指定 CoreAudio 设备。
-    private func bindOutputDevice(_ deviceID: AudioObjectID) throws {
-        let audioUnit = engine.outputNode.audioUnit
-        guard let au = audioUnit else {
-            throw NSError(domain: "AudioBridge", code: -2,
-                          userInfo: [NSLocalizedDescriptionKey: "outputNode 无 audioUnit"])
-        }
-        var dev = deviceID
-        let status = AudioUnitSetProperty(
-            au,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &dev,
-            UInt32(MemoryLayout<AudioObjectID>.size)
-        )
+    private func check(_ status: OSStatus, _ operation: String) throws {
         guard status == noErr else {
             throw NSError(domain: "AudioBridge", code: Int(status),
-                          userInfo: [NSLocalizedDescriptionKey: "绑定输出设备失败 (\(status))"])
+                          userInfo: [NSLocalizedDescriptionKey: "\(operation)失败 (\(status))"])
         }
     }
 
