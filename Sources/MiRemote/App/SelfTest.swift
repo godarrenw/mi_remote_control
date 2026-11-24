@@ -234,10 +234,31 @@ enum SelfTest {
         // M2 模块自测
         expect(MappingEngine.selfCheck(), "MappingEngine 状态机自测")
         expect(MappingEngine.tapRouteSelfCheck(), "M3 方向键分流快照/判定自测")
+        expect(MappingEngine.mouseScrollSelfCheck(), "鼠标滚轮短按、长按、松手和中断自测")
         expect(ActionRunner.selfCheck(), "ActionRunner 键表/修饰位自测")
         expect(WorkspaceActions.selfCheck(), "WorkspaceActions 工作区动作目录自测")
         expect(Set(KeyRemapper.table.map(\.key)).isSuperset(of: [.volUp, .volDown]),
                "音量键进入映射引擎（基础音量 / AI 数字 2、3）")
+
+        do {
+            let location = CGPoint(x: 137, y: 204)
+            for (direction, delta) in [(MouseScroll.Direction.up, Int64(24)), (.down, -24)] {
+                let scroll = MouseScroll(direction: direction, pixelsPerTick: 24)
+                let event = ActionRunner.makeMouseScrollEvent(scroll, at: location)
+                expect(event?.type == .scrollWheel && event?.location == location
+                       && event?.getIntegerValueField(.scrollWheelEventIsContinuous) == 1
+                       && event?.getIntegerValueField(.scrollWheelEventPointDeltaAxis1) == delta
+                       && event?.getIntegerValueField(.scrollWheelEventPointDeltaAxis2) == 0,
+                       "鼠标滚轮 \(direction) 生成指定坐标的垂直像素事件")
+            }
+            let d = JSONDecoder()
+            expect(try d.decode(Action.self, from: Data(#"{"type":"mouse_scroll","direction":"up"}"#.utf8))
+                       == .mouseScroll(MouseScroll(direction: .up)), "鼠标滚轮参数可省略")
+            let limits = #"{"type":"mouse_scroll","direction":"down","pixelsPerTick":999,"repeatMs":-1}"#
+            expect(try d.decode(Action.self, from: Data(limits.utf8))
+                       == .mouseScroll(MouseScroll(direction: .down, pixelsPerTick: 120, repeatMs: 8)),
+                   "鼠标滚轮参数限制在安全范围")
+        } catch { expect(false, "鼠标滚轮配置解析", "\(error)") }
 
         // M4-1. Action JSON 编解码往返（全部新旧 case）
         do {
@@ -248,6 +269,7 @@ enum SelfTest {
                 .windowCycle(scope: "app"), .windowCycle(scope: "global"),
                 .tabJump(dir: 1, index: nil), .tabJump(dir: -1, index: nil), .tabJump(dir: nil, index: 3),
                 .focusInput, .mouseMode,
+                .mouseScroll(MouseScroll(direction: .down, pixelsPerTick: 24, repeatMs: 32)),
                 .macro(steps: [.action(.keyStroke(key: "return", mods: [])),
                                .delay(ms: 100), .text("hello 世界"),
                                .action(.macro(steps: [.text("x")]))]),

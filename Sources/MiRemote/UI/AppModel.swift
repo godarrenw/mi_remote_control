@@ -151,9 +151,14 @@ enum ActionSummary {
             return (dir ?? 1) >= 0 ? "下一个标签页" : "上一个标签页"
         case .focusInput:               return "聚焦输入框"
         case .mouseMode:                return "鼠标模式开关"
+        case .mouseScroll(let scroll):  return scrollDisplay(scroll.direction)
         case .macro(let steps):         return "宏（\(steps.count) 步）"
         case .overlay(let name):        return overlayDisplay(name)
         }
+    }
+
+    static func scrollDisplay(_ direction: MouseScroll.Direction) -> String {
+        direction == .up ? "鼠标滚轮向上" : "鼠标滚轮向下"
     }
 
     /// 浮层名 → 中文显示（与 OverlayCenter.Kind 一致）。

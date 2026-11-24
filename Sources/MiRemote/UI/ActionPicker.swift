@@ -131,6 +131,8 @@ struct ActionPicker: View {
     @State private var showShell = false
     @State private var shellText = ""
     @State private var showMacro = false
+    @State private var showScroll = false
+    @State private var scrollDirection: MouseScroll.Direction = .up
 
     var body: some View {
         Menu {
@@ -165,6 +167,10 @@ struct ActionPicker: View {
             }
             Button("鼠标模式开关") { onChange(.mouseMode) }
                 .help("方向键变鼠标移动、OK 变点击，再触发一次退出")
+            Menu("鼠标滚轮") {
+                Button("向上…") { editScroll(.up) }
+                Button("向下…") { editScroll(.down) }
+            }
             Button("聚焦输入框") { onChange(.focusInput) }
                 .help("自动把光标放进前台 App 的输入框")
             Menu("打开浮层") {
@@ -203,6 +209,9 @@ struct ActionPicker: View {
         .sheet(isPresented: $showMacro) {
             MacroTextSheet(current: action) { onChange($0) }
         }
+        .sheet(isPresented: $showScroll) {
+            ScrollSettingsSheet(direction: scrollDirection, current: action) { onChange($0) }
+        }
         .sheet(isPresented: $showShell) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("运行 Shell 命令").font(.headline)
@@ -221,6 +230,57 @@ struct ActionPicker: View {
                 }
             }
             .padding(Spacing.sheetPadding)
+        }
+    }
+
+    private func editScroll(_ direction: MouseScroll.Direction) {
+        scrollDirection = direction
+        showScroll = true
+    }
+
+    @MainActor
+    private struct ScrollSettingsSheet: View {
+        let direction: MouseScroll.Direction
+        let onConfirm: (Action) -> Void
+        @Environment(\.dismiss) private var dismiss
+        @State private var pixels: Int
+        @State private var interval: Int
+
+        init(direction: MouseScroll.Direction, current: Action?, onConfirm: @escaping (Action) -> Void) {
+            self.direction = direction
+            self.onConfirm = onConfirm
+            let settings: MouseScroll
+            if case .mouseScroll(let scroll) = current {
+                settings = scroll
+            } else {
+                settings = MouseScroll(direction: direction)
+            }
+            _pixels = State(initialValue: settings.pixelsPerTick)
+            _interval = State(initialValue: settings.repeatMs)
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(ActionSummary.scrollDisplay(direction)).font(.headline)
+                Text("滚轮作用于鼠标指针所在区域。把指针移到对话记录上即可滚动，输入框可以继续保持焦点。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Stepper("每次滚动 \(pixels) 像素", value: $pixels, in: MouseScroll.pixelRange)
+                Stepper("重复间隔 \(interval) ms", value: $interval, in: MouseScroll.intervalRange)
+                Text("长按槽留空时，短按的滚轮动作也会在按住期间重复。")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("取消") { dismiss() }
+                    Button("确定") {
+                        onConfirm(.mouseScroll(MouseScroll(direction: direction, pixelsPerTick: pixels,
+                                                          repeatMs: interval)))
+                        dismiss()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(Spacing.sheetPadding)
+            .frame(width: 360)
         }
     }
 

@@ -552,8 +552,11 @@ final class KeyMapperApp: HIDEngineDelegate, MappingEngineDelegate {
         activateObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil) { [weak self] note in
             guard let self,
-                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                  app.processIdentifier != myPid else { return }
+                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            if app.processIdentifier == myPid {
+                self.engine.cancelMouseScroll()
+                return
+            }
             self.lastExternalApplication = app
             self.pushMRU(app)
             self.engine.setActiveProfile(app.bundleIdentifier)
@@ -788,6 +791,10 @@ final class AppServices {
                 km?.engine.resetInputState(reason: "系统睡眠")
                 tap?.resetPressState()
             })
+            workspaceObservers.append(wsnc.addObserver(
+                forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: nil) { [weak km] _ in
+                km?.engine.cancelMouseScroll()
+            })
             tap.start()
             hid.start()
             log("按键映射已启用（hidutil 中转 + CGEventTap + IOHID 监听兜底）")
@@ -806,6 +813,8 @@ final class AppServices {
     func stop() {
         guard started else { return }
         started = false
+        keyMapper?.runner.disableMouseScroll()
+        keyMapper?.engine.cancelMouseScroll()
         eventListener.stop()
         health.stop()
         // 先同步排空 ATVV 队列，再从生命周期线程收尾 VoiceBridgeApp；否则首帧回调
