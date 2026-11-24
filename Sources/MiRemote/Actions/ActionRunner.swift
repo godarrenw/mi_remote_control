@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import os
 
 /// shell 动作派生的活动进程组全局登记表：正常退出/服务 stop 时对全部活动组
 /// TERM→KILL 清扫，保证「shell 命令绝不跑过主程序生命周期」的承诺。
@@ -42,7 +43,7 @@ final class ShellProcessRegistry: @unchecked Sendable {
 }
 
 /// 动作执行器：把 Action 落成真正的系统事件/命令。
-/// MappingEngine 在主线程调用 run(_:)。语音/层动作不由此处理（映射层负责）。
+/// MappingEngine 在串行映射队列调用 run(_:)。语音/层动作不由此处理（映射层负责）。
 final class ActionRunner: ActionRunning, @unchecked Sendable {
 
     // MARK: - 键名 → keycode（ANSI 虚拟键码，来自 <HIToolbox/Events.h> kVK_*）
@@ -85,6 +86,7 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
     ]
 
     private let source = CGEventSource(stateID: .combinedSessionState)
+    private let mouseScrollEnabled = OSAllocatedUnfairLock(initialState: true)
 
     /// M5 v2 浮层动作出口：GUI 模式接线（OverlayCenter，主线程自行切换）；
     /// CLI 模式无 GUI，保持 nil，仅记日志。写主线程/读引擎线程，赋值一次后只读。
@@ -112,11 +114,34 @@ final class ActionRunner: ActionRunning, @unchecked Sendable {
         case .tabJump(let dir, let index):  tabJump(dir: dir, index: index)
         case .focusInput:                   FocusInput.perform()
         case .mouseMode:                    MouseMode.shared.toggle()
+        case .mouseScroll(let scroll):      mouseScroll(scroll)
         case .macro(let steps):             MacroEngine.shared.run(steps, runner: self)
         case .voice, .layerMomentary, .layerToggle, .none:
             // 这些由 MappingEngine / ATVV 侧处理，ActionRunner 忽略。
             log("ignore action handled elsewhere: \(action)")
         }
+    }
+
+    /// 服务退出时同步停止投递，无需等待映射队列上其他动作完成。
+    func disableMouseScroll() {
+        mouseScrollEnabled.withLock { $0 = false }
+    }
+
+    private func mouseScroll(_ scroll: MouseScroll) {
+        mouseScrollEnabled.withLock { enabled in
+            guard enabled, let location = CGEvent(source: nil)?.location else { return }
+            Self.makeMouseScrollEvent(scroll, at: location, source: source)?.post(tap: .cghidEventTap)
+        }
+    }
+
+    static func makeMouseScrollEvent(_ scroll: MouseScroll, at location: CGPoint,
+                                     source: CGEventSource? = nil) -> CGEvent? {
+        let delta = Int32(scroll.direction == .up ? scroll.pixelsPerTick : -scroll.pixelsPerTick)
+        let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 1,
+                            wheel1: delta, wheel2: 0, wheel3: 0)
+        event?.location = location
+        event?.flags = []
+        return event
     }
 
     // MARK: - key_stroke

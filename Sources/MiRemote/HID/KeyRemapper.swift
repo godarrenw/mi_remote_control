@@ -6,7 +6,7 @@ import os
 /// macOS 不允许用户态 seize 蓝牙 HID 键盘（0xE00002C1），IOHID 独占不可行。
 /// 正路：hidutil 把有副作用的键在内核层重映射到 F13-F19（系统零默认行为），
 /// 再用 CGEventTap 捕获并吞掉这些中转键，反查回原始键触发动作。
-/// 音量键保持系统原生（默认行为即所需）。
+/// 音量键也走中转，默认绑定仍发送系统音量动作。
 /// M3：方向键也进中转表，TapEngine 按 MappingEngine 快照三态分流：
 /// 纯原生场景就地改写回方向键 keycode 放行（保住系统 autorepeat 与零延迟），
 /// 层/手势场景吞掉喂引擎。
@@ -521,6 +521,7 @@ final class TapEngine: @unchecked Sendable {
             return
         }
         delegate?.hidLog("健康检查：TAP 已失效，尝试恢复")
+        router?.cancelMouseScroll()
         CGEvent.tapEnable(tap: tap, enable: true)
         if CGEvent.tapIsEnabled(tap: tap) {
             delegate?.hidLog("健康检查：TAP 已重新启用")
@@ -565,6 +566,7 @@ final class TapEngine: @unchecked Sendable {
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             let reason = type == .tapDisabledByTimeout ? "超时" : "用户输入"
+            router?.cancelMouseScroll()
             healthQueue.async { [weak self] in self?.recoverDisabledTap(reason) }
             return Unmanaged.passUnretained(event)
         }

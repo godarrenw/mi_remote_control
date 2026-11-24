@@ -116,6 +116,11 @@ CoreBluetooth without the system taking it over. See [DESIGN.md](DESIGN.md) (Chi
 | Voice | Hold to talk → text | — |
 | Power | Display sleep | Toggle mouse mode (D-pad moves pointer, OK = click) |
 
+**Scroll with the volume buttons.** In Key Mapping, set Volume + and Volume − to Mouse Scroll
+Up and Down under Tap. Leave Hold empty to scroll continuously until you release the button.
+Scrolling follows the mouse pointer. Hover over the conversation history to scroll while the
+input box keeps keyboard focus for typing or dictation.
+
 **Lost? Hold the menu key for 1.5s = escape hatch**: no matter which layer you're in or which
 overlay is open, it force-clears all layers, exits App control mode, and closes every overlay,
 returning to the base state (hardcoded fallback, unaffected by config).

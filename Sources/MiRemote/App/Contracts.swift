@@ -71,6 +71,28 @@ protocol HIDEngineDelegate: AnyObject {
     func hidSeizeState(_ exclusive: Bool)
 }
 
+struct MouseScroll: Equatable {
+    enum Direction: String, Codable {
+        case up, down
+    }
+
+    static let pixelRange = 1...120
+    static let intervalRange = 8...250
+    static let defaultPixels = 16
+    static let defaultIntervalMs = 20
+
+    let direction: Direction
+    let pixelsPerTick: Int
+    let repeatMs: Int
+
+    init(direction: Direction, pixelsPerTick: Int = Self.defaultPixels,
+         repeatMs: Int = Self.defaultIntervalMs) {
+        self.direction = direction
+        self.pixelsPerTick = min(max(pixelsPerTick, Self.pixelRange.lowerBound), Self.pixelRange.upperBound)
+        self.repeatMs = min(max(repeatMs, Self.intervalRange.lowerBound), Self.intervalRange.upperBound)
+    }
+}
+
 /// 动作（配置 JSON 的 Codable 模型）。type 字段区分。
 enum Action: Codable, Equatable {
     case keyStroke(key: String, mods: [String])   // key=键名(如"return","right_arrow","k")
@@ -85,13 +107,17 @@ enum Action: Codable, Equatable {
     case tabJump(dir: Int?, index: Int?)          // dir=±1 相对切标签(cmd+shift+[/]) / index=N 直跳(cmd+数字)
     case focusInput                               // 自动聚焦前台 app 输入框（三级兜底）
     case mouseMode                                // toggle 进入/退出鼠标模式
+    case mouseScroll(MouseScroll)                 // 指针位置上的原生滚轮事件
     case macro(steps: [MacroStep])                // 多步序列
     // M5 v2 心智模型：打开一个 GUI 浮层（window_picker / system_menu / tutorial）。
     // CLI 模式无 GUI，执行时仅记日志。名字用 String 保持向前兼容（新增浮层不改契约）。
     case overlay(String)
     case none
 
-    private enum K: String, CodingKey { case type, key, mods, value, scope, dir, index, steps }
+    private enum K: String, CodingKey {
+        case type, key, mods, value, scope, dir, index, steps
+        case direction, pixelsPerTick, repeatMs
+    }
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: K.self)
         switch try c.decode(String.self, forKey: .type) {
@@ -108,6 +134,11 @@ enum Action: Codable, Equatable {
                                              index: try c.decodeIfPresent(Int.self, forKey: .index))
         case "focus_input":  self = .focusInput
         case "mouse_mode":   self = .mouseMode
+        case "mouse_scroll":
+            self = .mouseScroll(MouseScroll(
+                direction: try c.decode(MouseScroll.Direction.self, forKey: .direction),
+                pixelsPerTick: try c.decodeIfPresent(Int.self, forKey: .pixelsPerTick) ?? MouseScroll.defaultPixels,
+                repeatMs: try c.decodeIfPresent(Int.self, forKey: .repeatMs) ?? MouseScroll.defaultIntervalMs))
         case "macro":        self = .macro(steps: try c.decodeIfPresent([MacroStep].self, forKey: .steps) ?? [])
         case "overlay":      self = .overlay(try c.decode(String.self, forKey: .value))
         case "none":         self = .none
@@ -135,6 +166,11 @@ enum Action: Codable, Equatable {
             try c.encodeIfPresent(index, forKey: .index)
         case .focusInput:       try c.encode("focus_input", forKey: .type)
         case .mouseMode:        try c.encode("mouse_mode", forKey: .type)
+        case .mouseScroll(let scroll):
+            try c.encode("mouse_scroll", forKey: .type)
+            try c.encode(scroll.direction, forKey: .direction)
+            try c.encode(scroll.pixelsPerTick, forKey: .pixelsPerTick)
+            try c.encode(scroll.repeatMs, forKey: .repeatMs)
         case .macro(let steps): try c.encode("macro", forKey: .type); try c.encode(steps, forKey: .steps)
         case .overlay(let v):   try c.encode("overlay", forKey: .type); try c.encode(v, forKey: .value)
         case .none:             try c.encode("none", forKey: .type)

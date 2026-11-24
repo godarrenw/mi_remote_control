@@ -37,6 +37,8 @@ struct TapRoute: Sendable {
 ///   doubleMs==0）松开即零延迟发 tap。
 /// - hold：按住超过 holdMs 未松开 = 长按（串行 queue 上 asyncAfter 定时）。触发后打
 ///   `holdFired` 标记，松开时不再补发 tap。
+/// - 滚轮：长按槽是滚轮时，或长按槽为空且当前短按动作是滚轮时，长按会持续滚动。
+///   重复回调沿用本次按压的 `seq`，松开或切换场景时作废。
 /// - double：`doubleMs>0` 时，`waitingDouble` 期间的第二次按下即判定双击，立即发 `double`
 ///   动作并吞掉这次按下的 tap/hold。
 /// - gesture（仅 ok 键）：ok 物理按住期间若有方向键按下，发 `ok.gesture[方向]`，
@@ -71,6 +73,12 @@ final class MappingEngine: @unchecked Sendable {
         var seq: Int = 0            // 定时器令牌：任何状态迁移都自增以作废在途回调
         var holdFired = false       // 本次按压的 hold 是否已触发
         var suppressTap = false     // 手势吞掉了本键（ok）的 tap，松开时不产出
+        var scroll: ScrollPress?
+    }
+
+    private struct ScrollPress {
+        let tap: MouseScroll?
+        let hold: MouseScroll?
     }
 
     // MARK: - 依赖与配置
@@ -229,7 +237,7 @@ final class MappingEngine: @unchecked Sendable {
 
     // MARK: - 对外 API（均切到执行上下文）
 
-    /// 热加载配置。重算 global 与当前 overlay，进行中的按压状态不清（阈值下次按压生效）。
+    /// 热加载配置。重算 global 与当前 overlay，作废滚轮按压。
     func setConfig(_ config: MappingConfig) {
         dispatch { [weak self] in self?._setConfig(config) }
     }
@@ -250,6 +258,11 @@ final class MappingEngine: @unchecked Sendable {
         dispatch { [weak self] in self?._resetInputState(reason) }
     }
 
+    /// Workspace 场景变化或服务退出时结束滚轮按压。
+    func cancelMouseScroll() {
+        dispatch { [weak self] in self?.cancelScrollPresses() }
+    }
+
     /// M5 v2 浮层键捕获：handler 非 nil 时所有遥控键改喂浮层（主线程回调），
     /// 置 nil 恢复正常动作分发。切换时复位输入运行态（清在途定时器/相位，防卡键）。
     func setOverlayCapture(_ handler: ((ButtonEvent) -> Void)?) {
@@ -263,6 +276,7 @@ final class MappingEngine: @unchecked Sendable {
     // MARK: - 对外 API 实现（均在执行上下文内）
 
     private func _setConfig(_ config: MappingConfig) {
+        cancelScrollPresses()
         self.config = config
         self.globalProfile = config.profiles["global"] ?? [:]
         // overlay 随新配置重解析（同一 bundle 的绑定可能已改）。
@@ -276,6 +290,7 @@ final class MappingEngine: @unchecked Sendable {
     }
 
     private func _setActiveProfile(_ bundleID: String?) {
+        cancelScrollPresses()
         activeBundleID = bundleID
         if let b = bundleID, let p = config.profiles[b] {
             activeOverlay = p
@@ -290,12 +305,8 @@ final class MappingEngine: @unchecked Sendable {
     private func _resetInputState(_ reason: String) {
         // 保留 states 条目、只 bump seq：直接清空会让新按压的 seq 从 0 重计，
         // 可能与在途旧定时器的令牌撞值而误触发。
-        for (key, var st) in states {
-            st.seq &+= 1
-            st.phase = .idle
-            st.holdFired = false
-            st.suppressTap = false
-            states[key] = st
+        for (key, st) in states {
+            states[key] = KeyState(seq: st.seq &+ 1)
         }
         okPhysicallyDown = false
         momentaryLayer = nil
@@ -303,6 +314,12 @@ final class MappingEngine: @unchecked Sendable {
         recomputeLayer()      // 若在瞬时层则通知回落（内部含快照发布）
         publishTapRoute()     // 层未变化时 recomputeLayer 不发布，这里兜底刷新 okDown
         log("RESET input state (\(reason))")
+    }
+
+    private func cancelScrollPresses() {
+        for (key, st) in states where st.scroll != nil {
+            states[key] = KeyState(seq: st.seq &+ 1)
+        }
     }
 
     private func _handle(_ event: ButtonEvent) {
@@ -326,10 +343,16 @@ final class MappingEngine: @unchecked Sendable {
         }
         // 鼠标模式：方向/OK/菜单/返回由 MouseMode 消费（方向=移动、OK=左键、菜单=右键、
         // 返回=退出模式），消费后不再走普通映射；其余键（电源/音量/语音）照常。
-        if MouseMode.shared.handle(key: event.key, isDown: event.isDown) { return }
+        if MouseMode.shared.handle(key: event.key, isDown: event.isDown) {
+            if states[event.key]?.scroll != nil || (event.key == .back && event.isDown) {
+                cancelScrollPresses()
+            }
+            return
+        }
         // Home 打开的调度中心模式：左右直接切 Space，并续期 20 秒状态窗口。
         // 同一次按压的 keyUp 也在此吞掉，避免给普通按键状态机留下孤儿事件。
         if TransientSystemUI.isMissionControlActive(), isDirection(event.key) {
+            if states[event.key]?.scroll != nil { cancelScrollPresses() }
             if event.isDown {
                 switch event.key {
                 case .left:  runner.run(.system("space_left"))
@@ -358,6 +381,7 @@ final class MappingEngine: @unchecked Sendable {
 
     private func handleDown(_ key: RemoteKey) {
         var st = states[key] ?? KeyState()
+        if st.phase == .down, st.scroll != nil { return }
 
         // 1) 手势：OK 整个物理按住期间都有效。不能把判定窗口卡在 holdMs 内，
         //    否则用户自然地“按稳 OK 再按方向”时，手势会被长按抢走。
@@ -384,6 +408,7 @@ final class MappingEngine: @unchecked Sendable {
         if st.phase == .waitingDouble {
             st.seq &+= 1                 // 作废在途的 double→tap 定时器
             st.phase = .consumed         // 吞掉这次按压的松开
+            st.scroll = nil
             states[key] = st
             perform(doubleAction(for: key), key: key, isHold: false)
             log("DOUBLE \(key)")
@@ -394,6 +419,7 @@ final class MappingEngine: @unchecked Sendable {
         st.phase = .down
         st.holdFired = false
         st.suppressTap = false
+        st.scroll = scrollPress(for: key)
         st.seq &+= 1
         let token = st.seq
         states[key] = st
@@ -412,6 +438,7 @@ final class MappingEngine: @unchecked Sendable {
     /// → 强制通知 layerChanged(0)（层本就是 0 时 recomputeLayer 去重不发，这里补发，
     /// UI 依此关 HUD/角标）→ 主线程通知 UI 侧关闭所有浮层。
     private func fireEscapeHatch() {
+        cancelScrollPresses()
         overlayHandler = nil
         MouseMode.shared.deactivate()   // 迷路兜底：鼠标模式一并退出
         lockedLayer = 0
@@ -436,6 +463,9 @@ final class MappingEngine: @unchecked Sendable {
     private func onHoldTimer(_ key: RemoteKey, _ token: Int) {
         guard var st = states[key], st.seq == token, st.phase == .down, !st.holdFired else { return }
         st.holdFired = true
+        let scroll = st.scroll?.hold
+        // 非滚轮长按仍须处理松手（例如瞬时层的持有键），此刻已不会再触发短按滚轮。
+        if scroll == nil { st.scroll = nil }
         states[key] = st
         // 基础文字输入态保护删除键：Profile 的 hold 不能篡改它。用户明确打开开关时，
         // 长按执行“全选 + 删除”；默认关闭时仍只发送普通 Delete。
@@ -450,10 +480,20 @@ final class MappingEngine: @unchecked Sendable {
                 // 绝不执行 Profile 的自定义 hold。
                 runner.run(.keyStroke(key: "delete", mods: []))
             }
+        } else if let scroll {
+            repeatScroll(scroll, key: key, token: token)
         } else {
             perform(binding(for: key)?.hold, key: key, isHold: true)
         }
         log("HOLD \(key)")
+    }
+
+    private func repeatScroll(_ scroll: MouseScroll, key: RemoteKey, token: Int) {
+        guard let st = states[key], st.seq == token, st.phase == .down else { return }
+        runner.run(.mouseScroll(scroll))
+        scheduleAfter(scroll.repeatMs) { [weak self] in
+            self?.repeatScroll(scroll, key: key, token: token)
+        }
     }
 
     // MARK: - 松开
@@ -471,23 +511,14 @@ final class MappingEngine: @unchecked Sendable {
 
         case .consumed:
             // 双击第二次按压 / 被手势吞：松开只复位。
-            st.seq &+= 1
-            st.phase = .idle
-            states[key] = st
+            states[key] = KeyState(seq: st.seq &+ 1)
 
         case .down:
             st.seq &+= 1   // 作废在途 hold 定时器
 
-            if st.holdFired {
-                // hold 已触发：松开时若持有瞬时层则回落。
+            if st.holdFired || st.suppressTap {
                 if momentaryOwner == key { clearMomentary() }
-                st.phase = .idle
-                states[key] = st
-            } else if st.suppressTap {
-                // 手势已吞掉本键（ok）的 tap。
-                if momentaryOwner == key { clearMomentary() }
-                st.phase = .idle
-                states[key] = st
+                states[key] = KeyState(seq: st.seq)
             } else {
                 // 短按候选。配了 double 且 doubleMs>0 → 进等待窗口；否则零延迟发 tap。
                 let hasDouble = doubleAction(for: key) != nil
@@ -499,9 +530,8 @@ final class MappingEngine: @unchecked Sendable {
                         self?.onDoubleTimer(key, token)
                     }
                 } else {
-                    st.phase = .idle
-                    states[key] = st
-                    fireTap(key)
+                    states[key] = KeyState(seq: st.seq)
+                    fireTap(key, scroll: st.scroll?.tap)
                     log("TAP \(key)")
                 }
             }
@@ -509,17 +539,15 @@ final class MappingEngine: @unchecked Sendable {
     }
 
     private func onDoubleTimer(_ key: RemoteKey, _ token: Int) {
-        guard var st = states[key], st.seq == token, st.phase == .waitingDouble else { return }
-        st.phase = .idle
-        states[key] = st
-        fireTap(key)
+        guard let st = states[key], st.seq == token, st.phase == .waitingDouble else { return }
+        states[key] = KeyState(seq: st.seq)
+        fireTap(key, scroll: st.scroll?.tap)
         log("TAP(after double window) \(key)")
     }
 
     // MARK: - 动作分发
 
-    /// 短按分发：层激活时优先 `layers["\(层)"]`，缺失退回 `tap`。
-    private func fireTap(_ key: RemoteKey) {
+    private func fireTap(_ key: RemoteKey, scroll: MouseScroll?) {
         // 从 MiRemote 打开 Mission Control 后，Home/菜单的首要语义是退出该系统态。
         // 发 Esc 比再次 open Mission Control.app 可靠，并且只消费一次。
         if effectiveLayer == 0, (key == .menu || key == .home),
@@ -528,25 +556,50 @@ final class MappingEngine: @unchecked Sendable {
             log("\(key) 退出 Mission Control")
             return
         }
-        let b = binding(for: key)
+        let action = tapAction(for: key, binding: binding(for: key))
+        if case .mouseScroll = action {
+            if let scroll { runner.run(.mouseScroll(scroll)) }
+        } else {
+            perform(action, key: key, isHold: false)
+        }
+    }
+
+    /// 短按分发：层激活时优先 `layers["\(层)"]`，缺失退回 `tap`。
+    private func tapAction(for key: RemoteKey, binding: KeyBinding?) -> Action? {
         let layer = effectiveLayer
-        let action: Action?
-        if layer != 0, let layered = b?.layers?["\(layer)"] {
-            action = layered
+        if layer != 0, let layered = binding?.layers?["\(layer)"] {
+            return layered
         } else if layer == 0, key == .ok {
             // 基础状态默认是系统确认/换行；仅 per-app profile 的显式覆盖可改写
             //（如飞书设了「Cmd+Enter 发送」）。global 改不动——见 overlayDeclared。
-            action = overlayDeclared(.ok)?.tap ?? .keyStroke(key: "return", mods: [])
+            return overlayDeclared(.ok)?.tap ?? .keyStroke(key: "return", mods: [])
         } else if layer == 0, key == .back {
             // 无论是否启用长按删除全部，短按都必须是普通 Delete。
-            action = .keyStroke(key: "delete", mods: [])
+            return .keyStroke(key: "delete", mods: [])
         } else if layer == 0, let arrow = Self.nativeArrowName[key] {
             // 通常由 TapEngine 原生直通；OK 手势未命中等回退路径仍保持光标语义。
-            action = .keyStroke(key: arrow, mods: [])
-        } else {
-            action = b?.tap
+            return .keyStroke(key: arrow, mods: [])
         }
-        perform(action, key: key, isHold: false)
+        return binding?.tap
+    }
+
+    private func scrollPress(for key: RemoteKey) -> ScrollPress? {
+        if key == .back, effectiveLayer == 0 { return nil }
+        let binding = binding(for: key)
+        let tap: MouseScroll?
+        if case .mouseScroll(let scroll) = tapAction(for: key, binding: binding) {
+            tap = scroll
+        } else {
+            tap = nil
+        }
+        let hold: MouseScroll?
+        switch binding?.hold {
+        case .mouseScroll(let scroll): hold = scroll
+        case nil: hold = tap
+        default: hold = nil
+        }
+        guard tap != nil || hold != nil else { return nil }
+        return ScrollPress(tap: tap, hold: hold)
     }
 
     /// 统一动作执行：层动作由引擎内部消化，其余交给 runner。
@@ -562,6 +615,12 @@ final class MappingEngine: @unchecked Sendable {
             }
         case .layerToggle(let n):
             toggleLayer(n)
+        case .mouseScroll where isHold:
+            // 只有按下时捕获的长按滚轮绑定可以开始重复。
+            break
+        case .mouseMode, .system("mission_control"):
+            cancelScrollPresses()
+            runner.run(action)
         default:
             runner.run(action)
         }
@@ -584,6 +643,12 @@ final class MappingEngine: @unchecked Sendable {
         let token = lockedLayerIdleSeq
         scheduleAfter(Self.lockedLayerIdleMs) { [weak self] in
             guard let self, self.lockedLayerIdleSeq == token, self.lockedLayer != 0 else { return }
+            if self.states.values.contains(where: {
+                $0.phase == .down && $0.holdFired && !$0.suppressTap && $0.scroll?.hold != nil
+            }) {
+                self.restartLockedLayerIdleTimer()
+                return
+            }
             self.lockedLayer = 0
             self.lockedLayerIdleSeq &+= 1
             self.recomputeLayer()
@@ -610,6 +675,7 @@ final class MappingEngine: @unchecked Sendable {
     private func recomputeLayer() {
         let eff = effectiveLayer
         guard eff != lastNotifiedLayer else { return }
+        cancelScrollPresses()
         lastNotifiedLayer = eff
         publishTapRoute()
         delegate?.layerChanged(eff)
@@ -755,6 +821,142 @@ extension MappingEngine {
                              hold: .layerToggle(2)),
         ]
         return cfg
+    }
+
+    static func mouseScrollSelfCheck() -> Bool {
+        var ok = true
+        func expect(_ condition: Bool, _ message: String) {
+            if !condition { ok = false; print("[MappingEngine.mouseScrollSelfCheck] FAIL: \(message)") }
+        }
+
+        let scrollUp = Action.mouseScroll(MouseScroll(direction: .up, pixelsPerTick: 24, repeatMs: 20))
+        let scrollDown = Action.mouseScroll(MouseScroll(direction: .down, pixelsPerTick: 12, repeatMs: 30))
+        var config = makeTestConfig()
+        config.profiles["global"]?["volUp"] = KeyBinding(tap: scrollUp, layers: ["2": .system("volume_up")])
+        config.profiles["global"]?["volDown"] = KeyBinding(tap: scrollDown)
+        config.profiles["global"]?["tv"] = KeyBinding(tap: .layerToggle(2))
+
+        func makeEngine(_ config: MappingConfig) -> (MappingEngine, RecordingRunner, ManualClock) {
+            let clock = ManualClock()
+            let runner = RecordingRunner()
+            let engine = MappingEngine(config: config, runner: runner, delegate: nil,
+                                       dispatch: { $0() }, scheduleAfter: clock.schedule)
+            return (engine, runner, clock)
+        }
+
+        func button(_ engine: MappingEngine, _ key: RemoteKey, down: Bool) {
+            engine.handle(ButtonEvent(key: key, isDown: down, timeNs: 0))
+        }
+
+        do {
+            let (engine, runner, clock) = makeEngine(config)
+            for key in [RemoteKey.volUp, .volDown] {
+                button(engine, key, down: true)
+                clock.advance(10)
+                button(engine, key, down: false)
+            }
+            clock.advance(500)
+            expect(runner.actions == [scrollUp, scrollDown], "音量 ± 短按各发一个对应方向的事件")
+        }
+
+        for (key, action, interval) in [(RemoteKey.volUp, scrollUp, 20), (.volDown, scrollDown, 30)] {
+            let (engine, runner, clock) = makeEngine(config)
+            button(engine, key, down: true)
+            clock.advance(99)
+            button(engine, key, down: true)
+            expect(runner.actions.isEmpty, "长按阈值前等待")
+            clock.advance(1)
+            expect(runner.actions == [action], "重复 down 不推迟首次滚动")
+            button(engine, key, down: true)
+            clock.advance(interval - 1)
+            expect(runner.actions == [action], "按配置间隔重复")
+            clock.advance(1 + interval)
+            expect(runner.actions == [action, action, action], "每个间隔只发一个事件")
+            button(engine, key, down: false)
+            expect(runner.actions.count == 3, "松开不补发短按")
+            button(engine, key, down: true)
+            clock.advance(100)
+            expect(runner.actions == Array(repeating: action, count: 4), "重新按下时旧重复回调作废")
+            button(engine, key, down: false)
+            clock.advance(500)
+            expect(runner.actions.count == 4, "松开后无滚动")
+        }
+
+        let interruptions: [(String, (MappingEngine) -> Void)] = [
+            ("设备移除", { $0.resetInputState(reason: "设备移除") }),
+            ("系统睡眠", { $0.resetInputState(reason: "系统睡眠") }),
+            ("事件 Tap 失效/桌面切换/服务退出", { $0.cancelMouseScroll() }),
+            ("前台应用切换", { $0.setActiveProfile("test.other-app") }),
+            ("配置热加载", { $0.setConfig(config) }),
+            ("暂停遥控", { $0.setSuspended(true) }),
+            ("浮层捕获", { $0.setOverlayCapture { _ in } }),
+            ("切换功能模式", { engine in
+                button(engine, .tv, down: true)
+                button(engine, .tv, down: false)
+            }),
+        ]
+        for (name, interrupt) in interruptions {
+            for heldMs in [40, 120] {
+                let (engine, runner, clock) = makeEngine(config)
+                button(engine, .volUp, down: true)
+                clock.advance(heldMs)
+                let before = runner.actions
+                expect(before.count == (heldMs == 40 ? 0 : 2), "\(name)：中断前状态正确")
+                interrupt(engine)
+                clock.advance(500)
+                button(engine, .volUp, down: false)
+                expect(runner.actions == before, "\(name)：作废持续滚动、待触发长按和旧松开")
+            }
+        }
+
+        do {
+            var config = config
+            let volumeDown = Action.system("volume_down")
+            config.profiles["global"]?["volUp"]?.hold = volumeDown
+            config.profiles["global"]?["volDown"] = KeyBinding(tap: volumeDown, hold: scrollDown)
+            let (engine, runner, clock) = makeEngine(config)
+            button(engine, .volUp, down: true)
+            clock.advance(200)
+            button(engine, .volUp, down: false)
+            expect(runner.actions == [volumeDown], "显式长按保留原非滚轮动作")
+            button(engine, .volDown, down: true)
+            clock.advance(130)
+            button(engine, .volDown, down: false)
+            expect(runner.actions == [volumeDown, scrollDown, scrollDown], "显式长按滚轮也会重复")
+            button(engine, .tv, down: true)
+            button(engine, .tv, down: false)
+            button(engine, .volUp, down: true)
+            button(engine, .volUp, down: false)
+            expect(runner.actions.last == .system("volume_up"), "功能模式的音量键短按覆盖仍生效")
+        }
+
+        do {
+            var config = config
+            config.profiles["global"]?["volUp"]?.hold = .layerMomentary(1)
+            let (engine, runner, clock) = makeEngine(config)
+            button(engine, .volUp, down: true)
+            clock.advance(100)
+            expect(engine.tapRoute.effectiveLayer == 1, "配置了短按滚轮仍可长按进入瞬时层")
+            button(engine, .volUp, down: false)
+            expect(engine.tapRoute.effectiveLayer == 0 && runner.actions.isEmpty, "松手退出瞬时层且不补发滚轮")
+        }
+
+        do {
+            var config = config
+            config.profiles["global"]?["volUp"]?.double = .system("mute")
+            let (engine, runner, clock) = makeEngine(config)
+            button(engine, .volUp, down: true)
+            button(engine, .volUp, down: false)
+            engine.setActiveProfile("test.other-app")
+            clock.advance(100)
+            expect(runner.actions.isEmpty, "应用切换取消仍在双击窗口内等待的滚轮短按")
+            button(engine, .volUp, down: true)
+            button(engine, .volUp, down: false)
+            clock.advance(80)
+            expect(runner.actions == [scrollUp], "切换后新按压正常继承全局滚轮绑定")
+        }
+
+        return ok
     }
 
     /// 纯逻辑自测：用虚拟时钟模拟事件序列，断言产出的 action / layer 序列。
